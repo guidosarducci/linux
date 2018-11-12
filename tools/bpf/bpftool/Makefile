@@ -46,7 +46,14 @@ CFLAGS += -DPACKAGE='"bpftool"' -D__EXPORTED_HEADERS__ \
 	-I$(srctree)/tools/lib/bpf \
 	-I$(srctree)/tools/perf
 CFLAGS += -DBPFTOOL_VERSION='"$(BPFTOOL_VERSION)"'
-LIBS = -lelf -lbfd -lopcodes $(LIBBPF)
+ifneq ($(EXTRA_CFLAGS),)
+CFLAGS += $(EXTRA_CFLAGS)
+endif
+ifneq ($(EXTRA_LDFLAGS),)
+LDFLAGS += $(EXTRA_LDFLAGS)
+endif
+
+LIBS = -lelf $(LIBBPF)
 
 INSTALL ?= install
 RM ?= rm -f
@@ -83,7 +90,16 @@ include $(wildcard $(OUTPUT)*.d)
 
 all: $(OUTPUT)bpftool
 
-SRCS = $(wildcard *.c)
+BFD_SRCS = jit_disasm.c
+
+SRCS = $(filter-out $(BFD_SRCS),$(wildcard *.c))
+
+ifeq ($(feature-libbfd),1)
+CFLAGS += -DHAVE_LIBBFD_SUPPORT
+SRCS += $(BFD_SRCS)
+LIBS += -lbfd -lopcodes
+endif
+
 OBJS = $(patsubst %.c,$(OUTPUT)%.o,$(SRCS)) $(OUTPUT)disasm.o
 
 $(OUTPUT)disasm.o: $(srctree)/kernel/bpf/disasm.c
