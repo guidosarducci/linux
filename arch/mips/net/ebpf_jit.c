@@ -667,9 +667,18 @@ static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 	s64 t64s;
 	int bpf_op = BPF_OP(insn->code);
 
-	if (IS_ENABLED(CONFIG_32BIT) && ((BPF_CLASS(insn->code) == BPF_ALU64)
-						|| (bpf_op == BPF_DW)))
-		return -EINVAL;
+	/* No support in 32-bit JIT for 64-bit ALU and args */
+	if (IS_ENABLED(CONFIG_32BIT)) {
+		if (BPF_CLASS(insn->code) == BPF_ALU64)
+			return -EINVAL;
+		switch (BPF_CLASS(insn->code) | BPF_SIZE(insn->code)) {
+		case BPF_LD | BPF_DW:
+		case BPF_LDX | BPF_DW:
+		case BPF_ST | BPF_DW:
+		case BPF_STX | BPF_DW:
+			return -EINVAL;
+		}
+	}
 
 	switch (insn->code) {
 	case BPF_ALU64 | BPF_ADD | BPF_K: /* ALU64_IMM */
