@@ -167,12 +167,11 @@ int open_obj_pinned(const char *path, bool quiet)
 	int fd = -1;
 
 	pname = strdup(path);
-	if (pname == NULL) {
+	if (!pname) {
 		if (!quiet)
-			p_err("bpf obj get (%s): %s", path, strerror(errno));
+			p_err("mem alloc failed");
 		goto out_ret;
 	}
-
 
 	fd = bpf_obj_get(pname);
 	if (fd < 0) {
@@ -380,15 +379,16 @@ void print_hex_data_json(uint8_t *data, size_t len)
 	jsonw_end_array(json_wtr);
 }
 
-static struct pinned_obj_table *build_fn_table; /* params for nftw cb*/
+/* extra params for nftw cb*/
+static struct pinned_obj_table *build_fn_table;
 static enum bpf_obj_type build_fn_type;
 
 static int do_build_table_cb(const char *fpath, const struct stat *sb,
-			    int typeflag, struct FTW *ftwbuf)
+			     int typeflag, struct FTW *ftwbuf)
 {
-	struct bpf_prog_info pinned_info = {};
-	struct pinned_obj *obj_node = NULL;
+	struct bpf_prog_info pinned_info;
 	__u32 len = sizeof(pinned_info);
+	struct pinned_obj *obj_node;
 	enum bpf_obj_type objtype;
 	int fd, err = 0;
 
@@ -403,21 +403,22 @@ static int do_build_table_cb(const char *fpath, const struct stat *sb,
 		goto out_close;
 
 	memset(&pinned_info, 0, sizeof(pinned_info));
-	if (bpf_obj_get_info_by_fd(fd, &pinned_info, &len)) {
-		p_err("can't get obj info: %s", strerror(errno));
+	if (bpf_obj_get_info_by_fd(fd, &pinned_info, &len))
 		goto out_close;
-	}
 
-	obj_node = malloc(sizeof(*obj_node));
+	obj_node = calloc(1, sizeof(*obj_node));
 	if (!obj_node) {
-		p_err("mem alloc failed");
 		err = -1;
 		goto out_close;
 	}
 
-	memset(obj_node, 0, sizeof(*obj_node));
 	obj_node->id = pinned_info.id;
 	obj_node->path = strdup(fpath);
+	if (!obj_node->path) {
+		err = -1;
+		free(obj_node);
+		goto out_close;
+	}
 	hash_add(build_fn_table->table, &obj_node->hash, obj_node->id);
 
 out_close:
