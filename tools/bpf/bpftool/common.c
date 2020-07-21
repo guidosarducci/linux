@@ -434,6 +434,7 @@ int build_pinned_obj_table(struct pinned_obj_table *tab,
 	FILE *mntfile = NULL;
 	int flags = FTW_PHYS;
 	int nopenfd = 16;
+	int err = 0;
 
 	mntfile = setmntent("/proc/mounts", "r");
 	if (!mntfile)
@@ -447,11 +448,12 @@ int build_pinned_obj_table(struct pinned_obj_table *tab,
 
 		if (strncmp(mntent->mnt_type, "bpf", 3) != 0)
 			continue;
-		if (nftw(path, do_build_table_cb, nopenfd, flags) == -1)
+		err = nftw(path, do_build_table_cb, nopenfd, flags);
+		if (err)
 			break;
 	}
 	fclose(mntfile);
-	return 0;
+	return err;
 }
 
 void delete_pinned_obj_table(struct pinned_obj_table *tab)
