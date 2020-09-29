@@ -657,7 +657,7 @@
 /*
  * .BTF
  */
-#ifdef CONFIG_DEBUG_INFO_BTF
+#ifdef CONFIG_BTF_KERNEL_SYSFS
 #define BTF								\
 	.BTF : AT(ADDR(.BTF) - LOAD_OFFSET) {				\
 		__start_BTF = .;					\

@@ -277,6 +277,15 @@ config DEBUG_INFO_BTF
 	  Turning this on expects presence of pahole tool, which will convert
 	  DWARF type info into equivalent deduplicated BTF type info.
 
+config BTF_KERNEL_SYSFS
+	bool "Expose BTF typeinfo in sysfs"
+	default y
+	depends on DEBUG_INFO_BTF
+	help
+	  Export kernel BTF information via SYSFS at /sys/kernel/btf/vmlinux.
+	  This increases the size of the kernel somewhat, as all generated BTF
+	  type info has to be loaded into the kernel image.
+
 config GDB_SCRIPTS
 	bool "Provide GDB scripts for kernel debugging"
 	depends on DEBUG_INFO
