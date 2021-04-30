@@ -24,31 +24,45 @@
 #include <asm/isa-rev.h>
 #include <asm/uasm.h>
 
-/* Registers used by JIT */
+/* Registers used by JIT:	  (MIPS32)	(MIPS64) */
 #define MIPS_R_ZERO	0
 #define MIPS_R_AT	1
-#define MIPS_R_V0	2	/* BPF_R0 */
-#define MIPS_R_V1	3
-#define MIPS_R_A0	4	/* BPF_R1 */
-#define MIPS_R_A1	5	/* BPF_R2 */
-#define MIPS_R_A2	6	/* BPF_R3 */
-#define MIPS_R_A3	7	/* BPF_R4 */
-#define MIPS_R_A4	8	/* BPF_R5 */
-#define MIPS_R_T4	12	/* BPF_AX */
-#define MIPS_R_T5	13
-#define MIPS_R_T6	14
-#define MIPS_R_T7	15
-#define MIPS_R_S0	16	/* BPF_R6 */
-#define MIPS_R_S1	17	/* BPF_R7 */
-#define MIPS_R_S2	18	/* BPF_R8 */
-#define MIPS_R_S3	19	/* BPF_R9 */
-#define MIPS_R_S4	20	/* BPF_TCC */
-#define MIPS_R_S5	21
-#define MIPS_R_S6	22
-#define MIPS_R_S7	23
-#define MIPS_R_T8	24
-#define MIPS_R_T9	25
+#define MIPS_R_V0	2	/* BPF_R0	BPF_R0 */
+#define MIPS_R_V1	3	/* BPF_R0	BPF_TCC */
+#define MIPS_R_A0	4	/* BPF_R1	BPF_R1 */
+#define MIPS_R_A1	5	/* BPF_R1	BPF_R2 */
+#define MIPS_R_A2	6	/* BPF_R2	BPF_R3 */
+#define MIPS_R_A3	7	/* BPF_R2	BPF_R4 */
+
+/* MIPS64 replaces T0-T3 scratch regs with extra arguments A4-A7. */
+#ifdef CONFIG_64BIT
+#  define MIPS_R_A4	8	/* (n/a)	BPF_R5 */
+#else
+#  define MIPS_R_T0	8	/* BPF_R3	(n/a)  */
+#  define MIPS_R_T1	9	/* BPF_R3	(n/a)  */
+#  define MIPS_R_T2	10	/* BPF_R4	(n/a)  */
+#  define MIPS_R_T3	11	/* BPF_R4	(n/a)  */
+#endif
+
+#define MIPS_R_T4	12	/* BPF_R5	BPF_AX */
+#define MIPS_R_T5	13	/* BPF_R5	(free) */
+#define MIPS_R_T6	14	/* (free)	(used) */
+#define MIPS_R_T7	15	/* BPF_TCC	(free) */
+#define MIPS_R_S0	16	/* BPF_R6	BPF_R6 */
+#define MIPS_R_S1	17	/* BPF_R6	BPF_R7 */
+#define MIPS_R_S2	18	/* BPF_R7	BPF_R8 */
+#define MIPS_R_S3	19	/* BPF_R7	BPF_R9 */
+#define MIPS_R_S4	20	/* BPF_R8	BPF_TCC */
+#define MIPS_R_S5	21	/* BPF_R8	(free) */
+#define MIPS_R_S6	22	/* BPF_R9	(free) */
+#define MIPS_R_S7	23	/* BPF_R9	(free) */
+#define MIPS_R_T8	24	/* (used)	(used) */
+#define MIPS_R_T9	25	/* (used)	(used) */
+#define MIPS_R_K0	26
+#define MIPS_R_K1	27
+#define MIPS_R_GP	28	/* (free)	(free) */
 #define MIPS_R_SP	29
+#define MIPS_R_S8	30	/* BPF_TCC	(free) */
 #define MIPS_R_RA	31
 
 /* eBPF flags */
