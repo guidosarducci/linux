@@ -22,31 +22,45 @@
 #include <asm/isa-rev.h>
 #include <asm/uasm.h>
 
-/* Registers used by JIT */
+/* Registers used by JIT:	  (MIPS32)	(MIPS64) */
 #define MIPS_R_ZERO	0
 #define MIPS_R_AT	1
-#define MIPS_R_V0	2	/* BPF_R0 */
-#define MIPS_R_V1	3
-#define MIPS_R_A0	4	/* BPF_R1 */
-#define MIPS_R_A1	5	/* BPF_R2 */
-#define MIPS_R_A2	6	/* BPF_R3 */
-#define MIPS_R_A3	7	/* BPF_R4 */
-#define MIPS_R_A4	8	/* BPF_R5 */
-#define MIPS_R_T4	12	/* BPF_AX */
-#define MIPS_R_T5	13
-#define MIPS_R_T6	14
-#define MIPS_R_T7	15
-#define MIPS_R_S0	16	/* BPF_R6 */
-#define MIPS_R_S1	17	/* BPF_R7 */
-#define MIPS_R_S2	18	/* BPF_R8 */
-#define MIPS_R_S3	19	/* BPF_R9 */
-#define MIPS_R_S4	20	/* BPF_TCC */
-#define MIPS_R_S5	21
-#define MIPS_R_S6	22
-#define MIPS_R_S7	23
-#define MIPS_R_T8	24
-#define MIPS_R_T9	25
+#define MIPS_R_V0	2	/* BPF_R0	BPF_R0 */
+#define MIPS_R_V1	3	/* BPF_R0	BPF_TCC */
+#define MIPS_R_A0	4	/* BPF_R1	BPF_R1 */
+#define MIPS_R_A1	5	/* BPF_R1	BPF_R2 */
+#define MIPS_R_A2	6	/* BPF_R2	BPF_R3 */
+#define MIPS_R_A3	7	/* BPF_R2	BPF_R4 */
+
+/* MIPS64 replaces T0-T3 scratch regs with extra arguments A4-A7. */
+#ifdef CONFIG_64BIT
+#  define MIPS_R_A4	8	/* (n/a)	BPF_R5 */
+#else
+#  define MIPS_R_T0	8	/* BPF_R3	(n/a)  */
+#  define MIPS_R_T1	9	/* BPF_R3	(n/a)  */
+#  define MIPS_R_T2	10	/* BPF_R4	(n/a)  */
+#  define MIPS_R_T3	11	/* BPF_R4	(n/a)  */
+#endif
+
+#define MIPS_R_T4	12	/* BPF_R5	BPF_AX */
+#define MIPS_R_T5	13	/* BPF_R5	(free) */
+#define MIPS_R_T6	14	/* (free)	(used) */
+#define MIPS_R_T7	15	/* BPF_TCC	(used) */
+#define MIPS_R_S0	16	/* BPF_R6	BPF_R6 */
+#define MIPS_R_S1	17	/* BPF_R6	BPF_R7 */
+#define MIPS_R_S2	18	/* BPF_R7	BPF_R8 */
+#define MIPS_R_S3	19	/* BPF_R7	BPF_R9 */
+#define MIPS_R_S4	20	/* BPF_R8	BPF_TCC */
+#define MIPS_R_S5	21	/* BPF_R8	(free) */
+#define MIPS_R_S6	22	/* BPF_R9	(free) */
+#define MIPS_R_S7	23	/* BPF_R9	(free) */
+#define MIPS_R_T8	24	/* (used)	(used) */
+#define MIPS_R_T9	25	/* (used)	(used) */
+#define MIPS_R_K0	26	/* BPF_AX	(free) */
+#define MIPS_R_K1	27	/* BPF_AX	(free) */
+#define MIPS_R_GP	28	/* (free)	(free) */
 #define MIPS_R_SP	29
+#define MIPS_R_S8	30	/* BPF_TCC	(free) */
 #define MIPS_R_RA	31
 
 /* eBPF flags */
@@ -55,10 +69,97 @@
 #define EBPF_SAVE_S2	BIT(2)
 #define EBPF_SAVE_S3	BIT(3)
 #define EBPF_SAVE_S4	BIT(4)
-#define EBPF_SAVE_RA	BIT(5)
-#define EBPF_SEEN_FP	BIT(6)
-#define EBPF_SEEN_TC	BIT(7)
-#define EBPF_TCC_IN_V1	BIT(8)
+#define EBPF_SAVE_S5	BIT(5)
+#define EBPF_SAVE_S6	BIT(6)
+#define EBPF_SAVE_S7	BIT(7)
+#define EBPF_SAVE_S8	BIT(8)
+#define EBPF_SAVE_RA	BIT(9)
+#define EBPF_SEEN_FP	BIT(10)
+#define EBPF_SEEN_TC	BIT(11)
+#define EBPF_TCC_IN_V1	BIT(12)
+
+/* Extra JIT registers mapped from BPF to MIPS */
+enum {
+	JIT_REG_TCC = MAX_BPF_JIT_REG,
+	JIT_SAV_TCC
+};
+
+/*
+ * Word-size and endianness-aware helpers for building MIPS32 vs MIPS64
+ * tables and selecting 32-bit subregisters from a register pair base.
+ * Simplify use by emulating MIPS_R_SP and MIPS_R_ZERO as register pairs
+ * and adding HI/LO word memory offsets.
+ */
+#ifdef CONFIG_64BIT
+#  define LO(reg) (reg)
+#  define HI(reg) (reg)
+#else	/* CONFIG_32BIT */
+#  ifdef __BIG_ENDIAN
+#    define HI(reg) ((reg) == MIPS_R_SP ? MIPS_R_ZERO : (reg))
+#    define LO(reg) ((reg) == MIPS_R_ZERO ? (reg) : \
+		     (reg) == MIPS_R_SP ? (reg) : \
+		     (reg) + 1)
+#    define OFFHI(mem) (mem)
+#    define OFFLO(mem) ((mem) + sizeof(long))
+#  else	/* __LITTLE_ENDIAN */
+#    define HI(reg) ((reg) == MIPS_R_ZERO ? (reg) : \
+		     (reg) == MIPS_R_SP ? MIPS_R_ZERO : \
+		     (reg) + 1)
+#    define LO(reg) (reg)
+#    define OFFHI(mem) ((mem) + sizeof(long))
+#    define OFFLO(mem) (mem)
+#  endif
+#endif
+
+#ifdef CONFIG_64BIT
+#  define M(expr32, expr64) (expr64)
+#else
+#  define M(expr32, expr64) (expr32)
+#endif
+const struct {
+	/* Register or pair base */
+	int reg;
+	/* Register flags */
+	u32 flags;
+	/* Usage table:   (MIPS32)			 (MIPS64) */
+} bpf2mips[] = {
+	/* Return value from in-kernel function, and exit value from eBPF. */
+	[BPF_REG_0] =  {M(MIPS_R_V0,			MIPS_R_V0)},
+	/* Arguments from eBPF program to in-kernel/BPF functions. */
+	[BPF_REG_1] =  {M(MIPS_R_A0,			MIPS_R_A0)},
+	[BPF_REG_2] =  {M(MIPS_R_A2,			MIPS_R_A1)},
+	[BPF_REG_3] =  {M(MIPS_R_T0,			MIPS_R_A2)},
+	[BPF_REG_4] =  {M(MIPS_R_T2,			MIPS_R_A3)},
+	[BPF_REG_5] =  {M(MIPS_R_T4,			MIPS_R_A4)},
+	/* Callee-saved registers preserved by in-kernel/BPF functions. */
+	[BPF_REG_6] =  {M(MIPS_R_S0,			MIPS_R_S0),
+			M(EBPF_SAVE_S0|EBPF_SAVE_S1,	EBPF_SAVE_S0)},
+	[BPF_REG_7] =  {M(MIPS_R_S2,			MIPS_R_S1),
+			M(EBPF_SAVE_S2|EBPF_SAVE_S3,	EBPF_SAVE_S1)},
+	[BPF_REG_8] =  {M(MIPS_R_S4,			MIPS_R_S2),
+			M(EBPF_SAVE_S4|EBPF_SAVE_S5,	EBPF_SAVE_S2)},
+	[BPF_REG_9] =  {M(MIPS_R_S6,			MIPS_R_S3),
+			M(EBPF_SAVE_S6|EBPF_SAVE_S7,	EBPF_SAVE_S3)},
+	[BPF_REG_10] = {M(MIPS_R_SP,			MIPS_R_SP),
+			M(EBPF_SEEN_FP,			EBPF_SEEN_FP)},
+	/* Internal register for rewriting insns during JIT blinding. */
+	[BPF_REG_AX] = {M(MIPS_R_K0,			MIPS_R_T4)},
+	/* Internal registers for storing and backup of TCC. */
+	[JIT_REG_TCC] =	{M(MIPS_R_T7,			MIPS_R_V1)},
+	[JIT_SAV_TCC] =	{M(MIPS_R_S8,			MIPS_R_S4),
+			 M(EBPF_SAVE_S8,		EBPF_SAVE_S4)}
+};
+#undef M
+
+static inline bool is64bit(void)
+{
+	return IS_ENABLED(CONFIG_64BIT);
+}
+
+static inline bool isbigend(void)
+{
+	return IS_ENABLED(CONFIG_CPU_BIG_ENDIAN);
+}
 
 /*
  * For the mips64 ISA, we need to track the value range or type for
@@ -199,40 +300,27 @@ static int ebpf_to_mips_reg(struct jit_ctx *ctx,
 
 	switch (ebpf_reg) {
 	case BPF_REG_0:
-		return MIPS_R_V0;
 	case BPF_REG_1:
-		return MIPS_R_A0;
 	case BPF_REG_2:
-		return MIPS_R_A1;
 	case BPF_REG_3:
-		return MIPS_R_A2;
 	case BPF_REG_4:
-		return MIPS_R_A3;
 	case BPF_REG_5:
-		return MIPS_R_A4;
 	case BPF_REG_6:
-		ctx->flags |= EBPF_SAVE_S0;
-		return MIPS_R_S0;
 	case BPF_REG_7:
-		ctx->flags |= EBPF_SAVE_S1;
-		return MIPS_R_S1;
 	case BPF_REG_8:
-		ctx->flags |= EBPF_SAVE_S2;
-		return MIPS_R_S2;
 	case BPF_REG_9:
-		ctx->flags |= EBPF_SAVE_S3;
-		return MIPS_R_S3;
+	case BPF_REG_AX:
+		ctx->flags |= bpf2mips[ebpf_reg].flags;
+		return bpf2mips[ebpf_reg].reg;
 	case BPF_REG_10:
 		if (u == REG_DST_NO_FP || u == REG_SRC_NO_FP)
 			goto bad_reg;
-		ctx->flags |= EBPF_SEEN_FP;
+		ctx->flags |= bpf2mips[ebpf_reg].flags;
 		/*
 		 * Needs special handling, return something that
 		 * cannot be clobbered just in case.
 		 */
 		return MIPS_R_ZERO;
-	case BPF_REG_AX:
-		return MIPS_R_T4;
 	default:
 bad_reg:
 		WARN(1, "Illegal bpf reg: %d\n", ebpf_reg);
@@ -245,15 +333,23 @@ bad_reg:
  *  Entry $sp ------>   +--------------------------------+
  *                      |   $ra  (optional)              |
  *                      +--------------------------------+
- *                      |   $s0  (optional)              |
+ *                      |   $s8  (optional)              |
  *                      +--------------------------------+
- *                      |   $s1  (optional)              |
+ *                      |   $s7  (optional)              |
  *                      +--------------------------------+
- *                      |   $s2  (optional)              |
+ *                      |   $s6  (optional)              |
+ *                      +--------------------------------+
+ *                      |   $s5  (optional)              |
+ *                      +--------------------------------+
+ *                      |   $s4  (optional)              |
  *                      +--------------------------------+
  *                      |   $s3  (optional)              |
  *                      +--------------------------------+
- *                      |   $s4  (optional)              |
+ *                      |   $s2  (optional)              |
+ *                      +--------------------------------+
+ *                      |   $s1  (optional)              |
+ *                      +--------------------------------+
+ *                      |   $s0  (optional)              |
  *                      +--------------------------------+
  *                      |   tmp-storage  (if $ra saved)  |
  * $sp + tmp_offset --> +--------------------------------+ <--BPF_REG_10
@@ -279,15 +375,23 @@ static int gen_int_prologue(struct jit_ctx *ctx)
 		 * extra 8-byte tmp area.
 		 */
 		stack_adjust += 2 * sizeof(long);
-	if (ctx->flags & EBPF_SAVE_S0)
+	if (ctx->flags & EBPF_SAVE_S8)
 		stack_adjust += sizeof(long);
-	if (ctx->flags & EBPF_SAVE_S1)
+	if (ctx->flags & EBPF_SAVE_S7)
 		stack_adjust += sizeof(long);
-	if (ctx->flags & EBPF_SAVE_S2)
+	if (ctx->flags & EBPF_SAVE_S6)
+		stack_adjust += sizeof(long);
+	if (ctx->flags & EBPF_SAVE_S5)
+		stack_adjust += sizeof(long);
+	if (ctx->flags & EBPF_SAVE_S4)
 		stack_adjust += sizeof(long);
 	if (ctx->flags & EBPF_SAVE_S3)
 		stack_adjust += sizeof(long);
-	if (ctx->flags & EBPF_SAVE_S4)
+	if (ctx->flags & EBPF_SAVE_S2)
+		stack_adjust += sizeof(long);
+	if (ctx->flags & EBPF_SAVE_S1)
+		stack_adjust += sizeof(long);
+	if (ctx->flags & EBPF_SAVE_S0)
 		stack_adjust += sizeof(long);
 
 	BUILD_BUG_ON(MAX_BPF_STACK & 7);
@@ -316,24 +420,24 @@ static int gen_int_prologue(struct jit_ctx *ctx)
 					MIPS_R_RA, store_offset, MIPS_R_SP);
 		store_offset -= sizeof(long);
 	}
-	if (ctx->flags & EBPF_SAVE_S0) {
+	if (ctx->flags & EBPF_SAVE_S8) {
 		emit_instr_long(ctx, sd, sw,
-					MIPS_R_S0, store_offset, MIPS_R_SP);
+					MIPS_R_S8, store_offset, MIPS_R_SP);
 		store_offset -= sizeof(long);
 	}
-	if (ctx->flags & EBPF_SAVE_S1) {
+	if (ctx->flags & EBPF_SAVE_S7) {
 		emit_instr_long(ctx, sd, sw,
-					MIPS_R_S1, store_offset, MIPS_R_SP);
+					MIPS_R_S7, store_offset, MIPS_R_SP);
 		store_offset -= sizeof(long);
 	}
-	if (ctx->flags & EBPF_SAVE_S2) {
+	if (ctx->flags & EBPF_SAVE_S6) {
 		emit_instr_long(ctx, sd, sw,
-					MIPS_R_S2, store_offset, MIPS_R_SP);
+					MIPS_R_S6, store_offset, MIPS_R_SP);
 		store_offset -= sizeof(long);
 	}
-	if (ctx->flags & EBPF_SAVE_S3) {
+	if (ctx->flags & EBPF_SAVE_S5) {
 		emit_instr_long(ctx, sd, sw,
-					MIPS_R_S3, store_offset, MIPS_R_SP);
+					MIPS_R_S5, store_offset, MIPS_R_SP);
 		store_offset -= sizeof(long);
 	}
 	if (ctx->flags & EBPF_SAVE_S4) {
@@ -341,10 +445,29 @@ static int gen_int_prologue(struct jit_ctx *ctx)
 					MIPS_R_S4, store_offset, MIPS_R_SP);
 		store_offset -= sizeof(long);
 	}
+	if (ctx->flags & EBPF_SAVE_S3) {
+		emit_instr_long(ctx, sd, sw,
+					MIPS_R_S3, store_offset, MIPS_R_SP);
+		store_offset -= sizeof(long);
+	}
+	if (ctx->flags & EBPF_SAVE_S2) {
+		emit_instr_long(ctx, sd, sw,
+					MIPS_R_S2, store_offset, MIPS_R_SP);
+		store_offset -= sizeof(long);
+	}
+	if (ctx->flags & EBPF_SAVE_S1) {
+		emit_instr_long(ctx, sd, sw,
+					MIPS_R_S1, store_offset, MIPS_R_SP);
+		store_offset -= sizeof(long);
+	}
+	if (ctx->flags & EBPF_SAVE_S0) {
+		emit_instr_long(ctx, sd, sw,
+					MIPS_R_S0, store_offset, MIPS_R_SP);
+		store_offset -= sizeof(long);
+	}
 
 	if ((ctx->flags & EBPF_SEEN_TC) && !(ctx->flags & EBPF_TCC_IN_V1))
-		emit_instr_long(ctx, daddu, addu,
-					MIPS_R_S4, MIPS_R_V1, MIPS_R_ZERO);
+		emit_instr(ctx, move, MIPS_R_S4, MIPS_R_V1);
 
 	return 0;
 }
@@ -369,24 +492,24 @@ static int build_int_epilogue(struct jit_ctx *ctx, int dest_reg)
 					MIPS_R_RA, store_offset, MIPS_R_SP);
 		store_offset -= sizeof(long);
 	}
-	if (ctx->flags & EBPF_SAVE_S0) {
+	if (ctx->flags & EBPF_SAVE_S8) {
 		emit_instr_long(ctx, ld, lw,
-					MIPS_R_S0, store_offset, MIPS_R_SP);
+					MIPS_R_S8, store_offset, MIPS_R_SP);
 		store_offset -= sizeof(long);
 	}
-	if (ctx->flags & EBPF_SAVE_S1) {
+	if (ctx->flags & EBPF_SAVE_S7) {
 		emit_instr_long(ctx, ld, lw,
-					MIPS_R_S1, store_offset, MIPS_R_SP);
+					MIPS_R_S7, store_offset, MIPS_R_SP);
 		store_offset -= sizeof(long);
 	}
-	if (ctx->flags & EBPF_SAVE_S2) {
+	if (ctx->flags & EBPF_SAVE_S6) {
 		emit_instr_long(ctx, ld, lw,
-				MIPS_R_S2, store_offset, MIPS_R_SP);
+					MIPS_R_S6, store_offset, MIPS_R_SP);
 		store_offset -= sizeof(long);
 	}
-	if (ctx->flags & EBPF_SAVE_S3) {
+	if (ctx->flags & EBPF_SAVE_S5) {
 		emit_instr_long(ctx, ld, lw,
-					MIPS_R_S3, store_offset, MIPS_R_SP);
+					MIPS_R_S5, store_offset, MIPS_R_SP);
 		store_offset -= sizeof(long);
 	}
 	if (ctx->flags & EBPF_SAVE_S4) {
@@ -394,8 +517,29 @@ static int build_int_epilogue(struct jit_ctx *ctx, int dest_reg)
 					MIPS_R_S4, store_offset, MIPS_R_SP);
 		store_offset -= sizeof(long);
 	}
+	if (ctx->flags & EBPF_SAVE_S3) {
+		emit_instr_long(ctx, ld, lw,
+					MIPS_R_S3, store_offset, MIPS_R_SP);
+		store_offset -= sizeof(long);
+	}
+	if (ctx->flags & EBPF_SAVE_S2) {
+		emit_instr_long(ctx, ld, lw,
+					MIPS_R_S2, store_offset, MIPS_R_SP);
+		store_offset -= sizeof(long);
+	}
+	if (ctx->flags & EBPF_SAVE_S1) {
+		emit_instr_long(ctx, ld, lw,
+					MIPS_R_S1, store_offset, MIPS_R_SP);
+		store_offset -= sizeof(long);
+	}
+	if (ctx->flags & EBPF_SAVE_S0) {
+		emit_instr_long(ctx, ld, lw,
+					MIPS_R_S0, store_offset, MIPS_R_SP);
+		store_offset -= sizeof(long);
+	}
 	emit_instr(ctx, jr, dest_reg);
 
+	/* Delay slot */
 	if (stack_adjust)
 		emit_instr_long(ctx, daddiu, addiu,
 					MIPS_R_SP, MIPS_R_SP, stack_adjust);
@@ -569,7 +713,7 @@ static int gen_imm_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 static void emit_const_to_reg(struct jit_ctx *ctx, int dst, u64 value)
 {
 	if (value >= 0xffffffffffff8000ull || value < 0x8000ull) {
-		emit_instr(ctx, daddiu, dst, MIPS_R_ZERO, (int)value);
+		emit_instr_long(ctx, daddiu, addiu, dst, MIPS_R_ZERO, (int)value);
 	} else if (value >= 0xffffffff80000000ull ||
 		   (value < 0x80000000 && value > 0xffff)) {
 		emit_instr(ctx, lui, dst, (s32)(s16)(value >> 16));
