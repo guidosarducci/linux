@@ -71,10 +71,14 @@
 #define EBPF_SAVE_S2	BIT(2)
 #define EBPF_SAVE_S3	BIT(3)
 #define EBPF_SAVE_S4	BIT(4)
-#define EBPF_SAVE_RA	BIT(5)
-#define EBPF_SEEN_FP	BIT(6)
-#define EBPF_SEEN_TC	BIT(7)
-#define EBPF_TCC_IN_V1	BIT(8)
+#define EBPF_SAVE_S5	BIT(5)
+#define EBPF_SAVE_S6	BIT(6)
+#define EBPF_SAVE_S7	BIT(7)
+#define EBPF_SAVE_S8	BIT(8)
+#define EBPF_SAVE_RA	BIT(9)
+#define EBPF_SEEN_FP	BIT(10)
+#define EBPF_SEEN_TC	BIT(11)
+#define EBPF_TCC_IN_V1	BIT(12)
 
 /*
  * For the mips64 ISA, we need to track the value range or type for
@@ -261,15 +265,23 @@ bad_reg:
  *  Entry $sp ------>   +--------------------------------+
  *                      |   $ra  (optional)              |
  *                      +--------------------------------+
- *                      |   $s0  (optional)              |
+ *                      |   $s8  (optional)              |
  *                      +--------------------------------+
- *                      |   $s1  (optional)              |
+ *                      |   $s7  (optional)              |
  *                      +--------------------------------+
- *                      |   $s2  (optional)              |
+ *                      |   $s6  (optional)              |
+ *                      +--------------------------------+
+ *                      |   $s5  (optional)              |
+ *                      +--------------------------------+
+ *                      |   $s4  (optional)              |
  *                      +--------------------------------+
  *                      |   $s3  (optional)              |
  *                      +--------------------------------+
- *                      |   $s4  (optional)              |
+ *                      |   $s2  (optional)              |
+ *                      +--------------------------------+
+ *                      |   $s1  (optional)              |
+ *                      +--------------------------------+
+ *                      |   $s0  (optional)              |
  *                      +--------------------------------+
  *                      |   tmp-storage  (if $ra saved)  |
  * $sp + tmp_offset --> +--------------------------------+ <--BPF_REG_10
@@ -295,15 +307,23 @@ static int gen_int_prologue(struct jit_ctx *ctx)
 		 * extra 8-byte tmp area.
 		 */
 		stack_adjust += 2 * sizeof(long);
-	if (ctx->flags & EBPF_SAVE_S0)
+	if (ctx->flags & EBPF_SAVE_S8)
 		stack_adjust += sizeof(long);
-	if (ctx->flags & EBPF_SAVE_S1)
+	if (ctx->flags & EBPF_SAVE_S7)
 		stack_adjust += sizeof(long);
-	if (ctx->flags & EBPF_SAVE_S2)
+	if (ctx->flags & EBPF_SAVE_S6)
+		stack_adjust += sizeof(long);
+	if (ctx->flags & EBPF_SAVE_S5)
+		stack_adjust += sizeof(long);
+	if (ctx->flags & EBPF_SAVE_S4)
 		stack_adjust += sizeof(long);
 	if (ctx->flags & EBPF_SAVE_S3)
 		stack_adjust += sizeof(long);
-	if (ctx->flags & EBPF_SAVE_S4)
+	if (ctx->flags & EBPF_SAVE_S2)
+		stack_adjust += sizeof(long);
+	if (ctx->flags & EBPF_SAVE_S1)
+		stack_adjust += sizeof(long);
+	if (ctx->flags & EBPF_SAVE_S0)
 		stack_adjust += sizeof(long);
 
 	BUILD_BUG_ON(MAX_BPF_STACK & 7);
@@ -332,24 +352,24 @@ static int gen_int_prologue(struct jit_ctx *ctx)
 					MIPS_R_RA, store_offset, MIPS_R_SP);
 		store_offset -= sizeof(long);
 	}
-	if (ctx->flags & EBPF_SAVE_S0) {
+	if (ctx->flags & EBPF_SAVE_S8) {
 		emit_instr_long(ctx, sd, sw,
-					MIPS_R_S0, store_offset, MIPS_R_SP);
+					MIPS_R_S8, store_offset, MIPS_R_SP);
 		store_offset -= sizeof(long);
 	}
-	if (ctx->flags & EBPF_SAVE_S1) {
+	if (ctx->flags & EBPF_SAVE_S7) {
 		emit_instr_long(ctx, sd, sw,
-					MIPS_R_S1, store_offset, MIPS_R_SP);
+					MIPS_R_S7, store_offset, MIPS_R_SP);
 		store_offset -= sizeof(long);
 	}
-	if (ctx->flags & EBPF_SAVE_S2) {
+	if (ctx->flags & EBPF_SAVE_S6) {
 		emit_instr_long(ctx, sd, sw,
-					MIPS_R_S2, store_offset, MIPS_R_SP);
+					MIPS_R_S6, store_offset, MIPS_R_SP);
 		store_offset -= sizeof(long);
 	}
-	if (ctx->flags & EBPF_SAVE_S3) {
+	if (ctx->flags & EBPF_SAVE_S5) {
 		emit_instr_long(ctx, sd, sw,
-					MIPS_R_S3, store_offset, MIPS_R_SP);
+					MIPS_R_S5, store_offset, MIPS_R_SP);
 		store_offset -= sizeof(long);
 	}
 	if (ctx->flags & EBPF_SAVE_S4) {
@@ -357,10 +377,29 @@ static int gen_int_prologue(struct jit_ctx *ctx)
 					MIPS_R_S4, store_offset, MIPS_R_SP);
 		store_offset -= sizeof(long);
 	}
+	if (ctx->flags & EBPF_SAVE_S3) {
+		emit_instr_long(ctx, sd, sw,
+					MIPS_R_S3, store_offset, MIPS_R_SP);
+		store_offset -= sizeof(long);
+	}
+	if (ctx->flags & EBPF_SAVE_S2) {
+		emit_instr_long(ctx, sd, sw,
+					MIPS_R_S2, store_offset, MIPS_R_SP);
+		store_offset -= sizeof(long);
+	}
+	if (ctx->flags & EBPF_SAVE_S1) {
+		emit_instr_long(ctx, sd, sw,
+					MIPS_R_S1, store_offset, MIPS_R_SP);
+		store_offset -= sizeof(long);
+	}
+	if (ctx->flags & EBPF_SAVE_S0) {
+		emit_instr_long(ctx, sd, sw,
+					MIPS_R_S0, store_offset, MIPS_R_SP);
+		store_offset -= sizeof(long);
+	}
 
 	if ((ctx->flags & EBPF_SEEN_TC) && !(ctx->flags & EBPF_TCC_IN_V1))
-		emit_instr_long(ctx, daddu, addu,
-					MIPS_R_S4, MIPS_R_V1, MIPS_R_ZERO);
+		emit_instr(ctx, move, MIPS_R_S4, MIPS_R_V1);
 
 	return 0;
 }
@@ -385,24 +424,24 @@ static int build_int_epilogue(struct jit_ctx *ctx, int dest_reg)
 					MIPS_R_RA, store_offset, MIPS_R_SP);
 		store_offset -= sizeof(long);
 	}
-	if (ctx->flags & EBPF_SAVE_S0) {
+	if (ctx->flags & EBPF_SAVE_S8) {
 		emit_instr_long(ctx, ld, lw,
-					MIPS_R_S0, store_offset, MIPS_R_SP);
+					MIPS_R_S8, store_offset, MIPS_R_SP);
 		store_offset -= sizeof(long);
 	}
-	if (ctx->flags & EBPF_SAVE_S1) {
+	if (ctx->flags & EBPF_SAVE_S7) {
 		emit_instr_long(ctx, ld, lw,
-					MIPS_R_S1, store_offset, MIPS_R_SP);
+					MIPS_R_S7, store_offset, MIPS_R_SP);
 		store_offset -= sizeof(long);
 	}
-	if (ctx->flags & EBPF_SAVE_S2) {
+	if (ctx->flags & EBPF_SAVE_S6) {
 		emit_instr_long(ctx, ld, lw,
-				MIPS_R_S2, store_offset, MIPS_R_SP);
+					MIPS_R_S6, store_offset, MIPS_R_SP);
 		store_offset -= sizeof(long);
 	}
-	if (ctx->flags & EBPF_SAVE_S3) {
+	if (ctx->flags & EBPF_SAVE_S5) {
 		emit_instr_long(ctx, ld, lw,
-					MIPS_R_S3, store_offset, MIPS_R_SP);
+					MIPS_R_S5, store_offset, MIPS_R_SP);
 		store_offset -= sizeof(long);
 	}
 	if (ctx->flags & EBPF_SAVE_S4) {
@@ -410,8 +449,29 @@ static int build_int_epilogue(struct jit_ctx *ctx, int dest_reg)
 					MIPS_R_S4, store_offset, MIPS_R_SP);
 		store_offset -= sizeof(long);
 	}
+	if (ctx->flags & EBPF_SAVE_S3) {
+		emit_instr_long(ctx, ld, lw,
+					MIPS_R_S3, store_offset, MIPS_R_SP);
+		store_offset -= sizeof(long);
+	}
+	if (ctx->flags & EBPF_SAVE_S2) {
+		emit_instr_long(ctx, ld, lw,
+					MIPS_R_S2, store_offset, MIPS_R_SP);
+		store_offset -= sizeof(long);
+	}
+	if (ctx->flags & EBPF_SAVE_S1) {
+		emit_instr_long(ctx, ld, lw,
+					MIPS_R_S1, store_offset, MIPS_R_SP);
+		store_offset -= sizeof(long);
+	}
+	if (ctx->flags & EBPF_SAVE_S0) {
+		emit_instr_long(ctx, ld, lw,
+					MIPS_R_S0, store_offset, MIPS_R_SP);
+		store_offset -= sizeof(long);
+	}
 	emit_instr(ctx, jr, dest_reg);
 
+	/* Delay slot */
 	if (stack_adjust)
 		emit_instr_long(ctx, daddiu, addiu,
 					MIPS_R_SP, MIPS_R_SP, stack_adjust);
