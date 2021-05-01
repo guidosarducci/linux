@@ -47,7 +47,7 @@
 #define MIPS_R_T4	12	/* BPF_R5	BPF_AX */
 #define MIPS_R_T5	13	/* BPF_R5	(free) */
 #define MIPS_R_T6	14	/* (free)	(used) */
-#define MIPS_R_T7	15	/* BPF_TCC	(free) */
+#define MIPS_R_T7	15	/* BPF_TCC	(used) */
 #define MIPS_R_S0	16	/* BPF_R6	BPF_R6 */
 #define MIPS_R_S1	17	/* BPF_R6	BPF_R7 */
 #define MIPS_R_S2	18	/* BPF_R7	BPF_R8 */
@@ -688,8 +688,8 @@ static int emit_bpf_tail_call(struct jit_ctx *ctx, int this_idx)
 	 *     goto out;
 	 */
 	off = offsetof(struct bpf_array, map.max_entries);
-	emit_instr(ctx, lwu, MIPS_R_T5, off, MIPS_R_A1);
-	emit_instr(ctx, sltu, MIPS_R_AT, MIPS_R_T5, MIPS_R_A2);
+	emit_instr(ctx, lwu, MIPS_R_T7, off, MIPS_R_A1);
+	emit_instr(ctx, sltu, MIPS_R_AT, MIPS_R_T7, MIPS_R_A2);
 	b_off = b_imm(this_idx + 1, ctx);
 	emit_instr(ctx, bne, MIPS_R_AT, MIPS_R_ZERO, b_off);
 	/*
@@ -698,7 +698,7 @@ static int emit_bpf_tail_call(struct jit_ctx *ctx, int this_idx)
 	 */
 	/* Delay slot */
 	tcc_reg = (ctx->flags & EBPF_TCC_IN_V1) ? MIPS_R_V1 : MIPS_R_S4;
-	emit_instr(ctx, daddiu, MIPS_R_T5, tcc_reg, -1);
+	emit_instr(ctx, daddiu, MIPS_R_T7, tcc_reg, -1);
 	b_off = b_imm(this_idx + 1, ctx);
 	emit_instr(ctx, bltz, tcc_reg, b_off);
 	/*
@@ -720,7 +720,7 @@ static int emit_bpf_tail_call(struct jit_ctx *ctx, int this_idx)
 	off = offsetof(struct bpf_prog, bpf_func);
 	emit_instr(ctx, ld, MIPS_R_T9, off, MIPS_R_AT);
 	/* All systems are go... propagate TCC */
-	emit_instr(ctx, daddu, MIPS_R_V1, MIPS_R_T5, MIPS_R_ZERO);
+	emit_instr(ctx, daddu, MIPS_R_V1, MIPS_R_T7, MIPS_R_ZERO);
 	/* Skip first instruction (TCC initialization) */
 	emit_instr(ctx, daddiu, MIPS_R_T9, MIPS_R_T9, 4);
 	return build_int_epilogue(ctx, MIPS_R_T9);
