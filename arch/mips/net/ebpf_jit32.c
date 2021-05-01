@@ -80,6 +80,77 @@
 #define EBPF_SEEN_TC	BIT(11)
 #define EBPF_TCC_IN_V1	BIT(12)
 
+/* Extra JIT registers mapped from BPF to MIPS */
+enum {
+	JIT_REG_TCC = MAX_BPF_JIT_REG,
+	JIT_SAV_TCC
+};
+
+/*
+ * Word-size and endianness-aware helpers for building MIPS32 vs MIPS64
+ * tables and selecting 32-bit subregisters from a register pair base.
+ * Simplify use by emulating MIPS_R_SP and MIPS_R_ZERO as register pairs
+ * and adding HI/LO word memory offsets.
+ */
+#ifdef CONFIG_64BIT
+#  define LO(reg) (reg)
+#  define HI(reg) (reg)
+#else	/* CONFIG_32BIT */
+#  ifdef __BIG_ENDIAN
+#    define HI(reg) ((reg) == MIPS_R_SP ? MIPS_R_ZERO : (reg))
+#    define LO(reg) ((reg) == MIPS_R_ZERO ? (reg) : \
+		     (reg) == MIPS_R_SP ? (reg) : \
+		     (reg) + 1)
+#    define OFFHI(mem) (mem)
+#    define OFFLO(mem) ((mem) + sizeof(long))
+#  else	/* __LITTLE_ENDIAN */
+#    define HI(reg) ((reg) == MIPS_R_ZERO ? (reg) : \
+		     (reg) == MIPS_R_SP ? MIPS_R_ZERO : \
+		     (reg) + 1)
+#    define LO(reg) (reg)
+#    define OFFHI(mem) ((mem) + sizeof(long))
+#    define OFFLO(mem) (mem)
+#  endif
+#endif
+
+#ifdef CONFIG_64BIT
+#  define M(expr32, expr64) (expr64)
+#else
+#  define M(expr32, expr64) (expr32)
+#endif
+const struct {
+	/* Register or pair base */
+	int reg;
+	/* Register flags */
+	u32 flags;
+	/* Usage table:   (MIPS32)			 (MIPS64) */
+} bpf2mips[] = {
+	/* Return value from in-kernel function, and exit value from eBPF. */
+	[BPF_REG_0] =  {M(MIPS_R_V0,			MIPS_R_V0)},
+	/* Arguments from eBPF program to in-kernel/BPF functions. */
+	[BPF_REG_1] =  {M(MIPS_R_A0,			MIPS_R_A0)},
+	[BPF_REG_2] =  {M(MIPS_R_A2,			MIPS_R_A1)},
+	[BPF_REG_3] =  {M(MIPS_R_T0,			MIPS_R_A2)},
+	[BPF_REG_4] =  {M(MIPS_R_T2,			MIPS_R_A3)},
+	[BPF_REG_5] =  {M(MIPS_R_T4,			MIPS_R_A4)},
+	/* Callee-saved registers preserved by in-kernel/BPF functions. */
+	[BPF_REG_6] =  {M(MIPS_R_S0,			MIPS_R_S0),
+			M(EBPF_SAVE_S0|EBPF_SAVE_S1,	EBPF_SAVE_S0)},
+	[BPF_REG_7] =  {M(MIPS_R_S2,			MIPS_R_S1),
+			M(EBPF_SAVE_S2|EBPF_SAVE_S3,	EBPF_SAVE_S1)},
+	[BPF_REG_8] =  {M(MIPS_R_S4,			MIPS_R_S2),
+			M(EBPF_SAVE_S4|EBPF_SAVE_S5,	EBPF_SAVE_S2)},
+	[BPF_REG_9] =  {M(MIPS_R_S6,			MIPS_R_S3),
+			M(EBPF_SAVE_S6|EBPF_SAVE_S7,	EBPF_SAVE_S3)},
+	[BPF_REG_10] = {M(MIPS_R_SP,			MIPS_R_SP),
+			M(EBPF_SEEN_FP,			EBPF_SEEN_FP)},
+	/* Internal registers for storing and backup of TCC. */
+	[JIT_REG_TCC] =	{M(MIPS_R_T7,			MIPS_R_V1)},
+	[JIT_SAV_TCC] =	{M(MIPS_R_S8,			MIPS_R_S4),
+			 M(EBPF_SAVE_S8,		EBPF_SAVE_S4)}
+};
+#undef M
+
 /*
  * For the mips64 ISA, we need to track the value range or type for
  * each JIT register.  The BPF machine requires zero extended 32-bit
@@ -219,33 +290,21 @@ static int ebpf_to_mips_reg(struct jit_ctx *ctx,
 
 	switch (ebpf_reg) {
 	case BPF_REG_0:
-		return MIPS_R_V0;
 	case BPF_REG_1:
-		return MIPS_R_A0;
 	case BPF_REG_2:
-		return MIPS_R_A1;
 	case BPF_REG_3:
-		return MIPS_R_A2;
 	case BPF_REG_4:
-		return MIPS_R_A3;
 	case BPF_REG_5:
-		return MIPS_R_A4;
 	case BPF_REG_6:
-		ctx->flags |= EBPF_SAVE_S0;
-		return MIPS_R_S0;
 	case BPF_REG_7:
-		ctx->flags |= EBPF_SAVE_S1;
-		return MIPS_R_S1;
 	case BPF_REG_8:
-		ctx->flags |= EBPF_SAVE_S2;
-		return MIPS_R_S2;
 	case BPF_REG_9:
-		ctx->flags |= EBPF_SAVE_S3;
-		return MIPS_R_S3;
+		ctx->flags |= bpf2mips[ebpf_reg].flags;
+		return bpf2mips[ebpf_reg].reg;
 	case BPF_REG_10:
 		if (w == dst_reg || w == src_reg_no_fp)
 			goto bad_reg;
-		ctx->flags |= EBPF_SEEN_FP;
+		ctx->flags |= bpf2mips[ebpf_reg].flags;
 		/*
 		 * Needs special handling, return something that
 		 * cannot be clobbered just in case.
