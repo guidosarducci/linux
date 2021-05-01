@@ -151,6 +151,16 @@ const struct {
 };
 #undef M
 
+static inline bool is64bit(void)
+{
+	return IS_ENABLED(CONFIG_64BIT);
+}
+
+static inline bool isbigend(void)
+{
+	return IS_ENABLED(CONFIG_CPU_BIG_ENDIAN);
+}
+
 /*
  * For the mips64 ISA, we need to track the value range or type for
  * each JIT register.  The BPF machine requires zero extended 32-bit
