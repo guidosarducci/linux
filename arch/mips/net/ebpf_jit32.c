@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Just-In-Time compiler for eBPF filters on MIPS
- *
- * Copyright (c) 2017 Cavium, Inc.
+ * Just-In-Time compiler for eBPF filters on MIPS32
+ * Copyright (c) 2021 Tony Ambardar <Tony.Ambardar@gmail.com>
  *
  * Based on code from:
+ *
+ * Copyright (c) 2017 Cavium, Inc.
+ * Author: David Daney <david.daney@cavium.com>
  *
  * Copyright (c) 2014 Imagination Technologies Ltd.
  * Author: Markos Chandras <markos.chandras@imgtec.com>
