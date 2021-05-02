@@ -58,8 +58,8 @@
 #define MIPS_R_S7	23	/* BPF_R9	(free) */
 #define MIPS_R_T8	24	/* (used)	(used) */
 #define MIPS_R_T9	25	/* (used)	(used) */
-#define MIPS_R_K0	26
-#define MIPS_R_K1	27
+#define MIPS_R_K0	26	/* BPF_AX	(free) */
+#define MIPS_R_K1	27	/* BPF_AX	(free) */
 #define MIPS_R_GP	28	/* (free)	(free) */
 #define MIPS_R_SP	29
 #define MIPS_R_S8	30	/* BPF_TCC	(free) */
@@ -144,6 +144,8 @@ const struct {
 			M(EBPF_SAVE_S6|EBPF_SAVE_S7,	EBPF_SAVE_S3)},
 	[BPF_REG_10] = {M(MIPS_R_SP,			MIPS_R_SP),
 			M(EBPF_SEEN_FP,			EBPF_SEEN_FP)},
+	/* Internal register for rewriting insns during JIT blinding. */
+	[BPF_REG_AX] = {M(MIPS_R_K0,			MIPS_R_T4)},
 	/* Internal registers for storing and backup of TCC. */
 	[JIT_REG_TCC] =	{M(MIPS_R_T7,			MIPS_R_V1)},
 	[JIT_SAV_TCC] =	{M(MIPS_R_S8,			MIPS_R_S4),
@@ -309,6 +311,7 @@ static int ebpf_to_mips_reg(struct jit_ctx *ctx,
 	case BPF_REG_7:
 	case BPF_REG_8:
 	case BPF_REG_9:
+	case BPF_REG_AX:
 		ctx->flags |= bpf2mips[ebpf_reg].flags;
 		return bpf2mips[ebpf_reg].reg;
 	case BPF_REG_10:
@@ -320,8 +323,6 @@ static int ebpf_to_mips_reg(struct jit_ctx *ctx,
 		 * cannot be clobbered just in case.
 		 */
 		return MIPS_R_ZERO;
-	case BPF_REG_AX:
-		return MIPS_R_T4;
 	default:
 bad_reg:
 		WARN(1, "Illegal bpf reg: %d\n", ebpf_reg);
