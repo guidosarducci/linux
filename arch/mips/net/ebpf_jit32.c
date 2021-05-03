@@ -747,10 +747,23 @@ static void emit_const_to_reg(struct jit_ctx *ctx, int dst, u64 value)
 	}
 }
 
+/*
+ * Tail call helper arguments passed via BPF ABI as u64 parameters. On
+ * MIPS64 N64 ABI systems these are native regs, while on MIPS32 O32 ABI
+ * systems these are reg pairs:
+ *
+ * R1 -> &ctx
+ * R2 -> &array
+ * R3 -> index
+ */
 static int emit_bpf_tail_call(struct jit_ctx *ctx, int this_idx)
 {
+	int tcc_reg = bpf2mips[JIT_REG_TCC].reg;
+	int tcc_sav = bpf2mips[JIT_SAV_TCC].reg;
+	int r2 = bpf2mips[BPF_REG_2].reg;
+	int r3 = bpf2mips[BPF_REG_3].reg;
 	int off, b_off;
-	int tcc_reg;
+	int tcc;
 
 	ctx->flags |= EBPF_SEEN_TC;
 	/*
@@ -758,41 +771,41 @@ static int emit_bpf_tail_call(struct jit_ctx *ctx, int this_idx)
 	 *     goto out;
 	 */
 	off = offsetof(struct bpf_array, map.max_entries);
-	emit_instr(ctx, lwu, MIPS_R_T7, off, MIPS_R_A1);
-	emit_instr(ctx, sltu, MIPS_R_AT, MIPS_R_T7, MIPS_R_A2);
+	emit_instr_long(ctx, lwu, lw, MIPS_R_AT, off, LO(r2));
+	emit_instr(ctx, sltu, MIPS_R_AT, MIPS_R_AT, LO(r3));
 	b_off = b_imm(this_idx + 1, ctx);
-	emit_instr(ctx, bne, MIPS_R_AT, MIPS_R_ZERO, b_off);
+	emit_instr(ctx, bnez, MIPS_R_AT, b_off);
 	/*
 	 * if (TCC-- < 0)
 	 *     goto out;
 	 */
 	/* Delay slot */
-	tcc_reg = (ctx->flags & EBPF_TCC_IN_V1) ? MIPS_R_V1 : MIPS_R_S4;
-	emit_instr(ctx, daddiu, MIPS_R_T7, tcc_reg, -1);
+	tcc = (ctx->flags & EBPF_TCC_IN_REG) ? tcc_reg : tcc_sav;
+	emit_instr_long(ctx, daddiu, addiu, MIPS_R_T8, tcc, -1);
 	b_off = b_imm(this_idx + 1, ctx);
-	emit_instr(ctx, bltz, tcc_reg, b_off);
+	emit_instr(ctx, bltz, tcc, b_off);
 	/*
 	 * prog = array->ptrs[index];
 	 * if (prog == NULL)
 	 *     goto out;
 	 */
 	/* Delay slot */
-	emit_instr(ctx, dsll, MIPS_R_T8, MIPS_R_A2, 3);
-	emit_instr(ctx, daddu, MIPS_R_T8, MIPS_R_T8, MIPS_R_A1);
+	emit_instr_long(ctx, dsll, sll, MIPS_R_AT, LO(r3), ilog2(sizeof(long)));
+	emit_instr_long(ctx, daddu, addu, MIPS_R_AT, MIPS_R_AT, LO(r2));
 	off = offsetof(struct bpf_array, ptrs);
-	emit_instr(ctx, ld, MIPS_R_AT, off, MIPS_R_T8);
+	emit_instr_long(ctx, ld, lw, MIPS_R_AT, off, MIPS_R_AT);
 	b_off = b_imm(this_idx + 1, ctx);
-	emit_instr(ctx, beq, MIPS_R_AT, MIPS_R_ZERO, b_off);
+	emit_instr(ctx, beqz, MIPS_R_AT, b_off);
 	/* Delay slot */
 	emit_instr(ctx, nop);
 
 	/* goto *(prog->bpf_func + 4); */
 	off = offsetof(struct bpf_prog, bpf_func);
-	emit_instr(ctx, ld, MIPS_R_T9, off, MIPS_R_AT);
+	emit_instr_long(ctx, ld, lw, MIPS_R_T9, off, MIPS_R_AT);
 	/* All systems are go... propagate TCC */
-	emit_instr(ctx, daddu, MIPS_R_V1, MIPS_R_T7, MIPS_R_ZERO);
+	emit_instr(ctx, move, tcc_reg, MIPS_R_T8);
 	/* Skip first instruction (TCC initialization) */
-	emit_instr(ctx, daddiu, MIPS_R_T9, MIPS_R_T9, 4);
+	emit_instr_long(ctx, daddiu, addiu, MIPS_R_T9, MIPS_R_T9, 4);
 	return build_int_epilogue(ctx, MIPS_R_T9);
 }
 
