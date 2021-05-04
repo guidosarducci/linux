@@ -164,6 +164,15 @@ static inline bool isbigend(void)
 }
 
 /*
+ * Under MIPS32 O32 ABI calling convention, u64 BPF regs R1-R2 are passed
+ * via reg pairs in $a0-$a3, while BPF regs R3-R5 are passed via the stack.
+ * Stack space is always reserved for $a0-$a3, with the whole area aligned
+ * to double-word.
+ */
+#define ARGS_RESV_SIZE (2 * sizeof(u64))
+#define ARGS_SIZE ALIGN(5 * sizeof(u64), 8)
+
+/*
  * For the mips64 ISA, we need to track the value range or type for
  * each JIT register.  The BPF machine requires zero extended 32-bit
  * values, but the mips64 ISA requires sign extended 32-bit values.
@@ -203,6 +212,7 @@ enum reg_val_type {
 struct jit_ctx {
 	const struct bpf_prog *skf;
 	int stack_size;
+	int bpf_stack_off;
 	u32 idx;
 	u32 flags;
 	u32 *offsets;
@@ -360,7 +370,12 @@ bad_reg:
  *                      |      .                         |
  *                      |      .                         |
  *                      |      .                         |
- *     $sp -------->    +--------------------------------+
+ *                      +--------------------------------+
+ *                      |   BPF_CALL function arguments  |
+ *                      |     ARGS_SIZE (if $ra saved)   |
+ *                      |      .        (and O32 ABI )   |
+ *                      |      .                         |
+ *        $sp ------>   +--------------------------------+
  *
  * If BPF_REG_10 is never referenced, then the MAX_BPF_STACK sized
  * area is not allocated.
@@ -370,6 +385,7 @@ static int gen_int_prologue(struct jit_ctx *ctx)
 	int stack_adjust = 0;
 	int store_offset;
 	int locals_size;
+	int args_size;
 
 	if (ctx->flags & EBPF_SAVE_RA)
 		/*
@@ -398,10 +414,12 @@ static int gen_int_prologue(struct jit_ctx *ctx)
 
 	BUILD_BUG_ON(MAX_BPF_STACK & 7);
 	locals_size = (ctx->flags & EBPF_SEEN_FP) ? MAX_BPF_STACK : 0;
+	args_size = !is64bit() && (ctx->flags & EBPF_SAVE_RA) ? ARGS_SIZE : 0;
 
-	stack_adjust += locals_size;
+	stack_adjust += args_size + locals_size;
 
 	ctx->stack_size = stack_adjust;
+	ctx->bpf_stack_off = args_size + locals_size;
 
 	/*
 	 * First instruction initializes the tail call count (TCC).
@@ -809,6 +827,27 @@ static int emit_bpf_tail_call(struct jit_ctx *ctx, int this_idx)
 	return build_int_epilogue(ctx, MIPS_R_T9);
 }
 
+/*
+ * Push BPF regs R3-R5 to the stack, skipping BPF regs R1-R2 which are
+ * passed via MIPS register pairs in $a0-$a3. Register order within pairs
+ * and the memory storage order are identical i.e. endian native.
+ */
+
+static void emit_push_args(struct jit_ctx *ctx)
+{
+	int store_offset = ARGS_RESV_SIZE;
+	int bpf, reg;
+
+	for (bpf = BPF_REG_3; bpf <= BPF_REG_5; bpf++) {
+		reg = bpf2mips[bpf].reg;
+
+		emit_instr(ctx, sw, reg, store_offset, MIPS_R_SP);
+		store_offset += sizeof(long); reg++;
+		emit_instr(ctx, sw, reg, store_offset, MIPS_R_SP);
+		store_offset += sizeof(long);
+	}
+}
+
 static bool is_bad_offset(int b_off)
 {
 	return b_off > 0x1ffff || b_off < -0x20000;
@@ -845,12 +884,12 @@ static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 	case BPF_ALU | BPF_MOV | BPF_K: /* ALU32_IMM */
 	case BPF_ALU | BPF_ADD | BPF_K: /* ALU32_IMM */
 	case BPF_ALU | BPF_SUB | BPF_K: /* ALU32_IMM */
-	case BPF_ALU | BPF_OR | BPF_K: /* ALU64_IMM */
-	case BPF_ALU | BPF_AND | BPF_K: /* ALU64_IMM */
-	case BPF_ALU | BPF_LSH | BPF_K: /* ALU64_IMM */
-	case BPF_ALU | BPF_RSH | BPF_K: /* ALU64_IMM */
-	case BPF_ALU | BPF_XOR | BPF_K: /* ALU64_IMM */
-	case BPF_ALU | BPF_ARSH | BPF_K: /* ALU64_IMM */
+	case BPF_ALU | BPF_OR | BPF_K: /* ALU32_IMM */
+	case BPF_ALU | BPF_AND | BPF_K: /* ALU32_IMM */
+	case BPF_ALU | BPF_LSH | BPF_K: /* ALU32_IMM */
+	case BPF_ALU | BPF_RSH | BPF_K: /* ALU32_IMM */
+	case BPF_ALU | BPF_XOR | BPF_K: /* ALU32_IMM */
+	case BPF_ALU | BPF_ARSH | BPF_K: /* ALU32_IMM */
 		r = gen_imm_insn(insn, ctx, this_idx);
 		if (r < 0)
 			return r;
@@ -990,10 +1029,10 @@ static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 		did_move = false;
 		if (insn->src_reg == BPF_REG_10) {
 			if (bpf_op == BPF_MOV) {
-				emit_instr(ctx, daddiu, dst, MIPS_R_SP, MAX_BPF_STACK);
+				emit_instr(ctx, daddiu, dst, MIPS_R_SP, ctx->bpf_stack_off);
 				did_move = true;
 			} else {
-				emit_instr(ctx, daddiu, MIPS_R_AT, MIPS_R_SP, MAX_BPF_STACK);
+				emit_instr(ctx, daddiu, MIPS_R_AT, MIPS_R_SP, ctx->bpf_stack_off);
 				src = MIPS_R_AT;
 			}
 		} else if (get_reg_val_type(ctx, this_idx, insn->src_reg) == REG_32BIT) {
@@ -1469,6 +1508,8 @@ jeq_common:
 
 	case BPF_JMP | BPF_CALL:
 		ctx->flags |= EBPF_SAVE_RA;
+		if (!is64bit())
+			emit_push_args(ctx);
 		t64s = (s64)insn->imm + (long)__bpf_call_base;
 		emit_const_to_reg(ctx, MIPS_R_T9, (u64)t64s);
 		emit_instr(ctx, jalr, MIPS_R_RA, MIPS_R_T9);
@@ -1524,7 +1565,7 @@ jeq_common:
 		if (insn->dst_reg == BPF_REG_10) {
 			ctx->flags |= EBPF_SEEN_FP;
 			dst = MIPS_R_SP;
-			mem_off = insn->off + MAX_BPF_STACK;
+			mem_off = insn->off + ctx->bpf_stack_off;
 		} else {
 			dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
 			if (dst < 0)
@@ -1555,7 +1596,7 @@ jeq_common:
 		if (insn->src_reg == BPF_REG_10) {
 			ctx->flags |= EBPF_SEEN_FP;
 			src = MIPS_R_SP;
-			mem_off = insn->off + MAX_BPF_STACK;
+			mem_off = insn->off + ctx->bpf_stack_off;
 		} else {
 			src = ebpf_to_mips_reg(ctx, insn, REG_SRC_NO_FP);
 			if (src < 0)
@@ -1590,7 +1631,7 @@ jeq_common:
 		if (insn->dst_reg == BPF_REG_10) {
 			ctx->flags |= EBPF_SEEN_FP;
 			dst = MIPS_R_SP;
-			mem_off = insn->off + MAX_BPF_STACK;
+			mem_off = insn->off + ctx->bpf_stack_off;
 		} else {
 			dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
 			if (dst < 0)
