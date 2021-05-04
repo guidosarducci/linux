@@ -2079,6 +2079,12 @@ static void jit_fill_hole(void *area, unsigned int size)
 		uasm_i_break(&p, BRK_BUG); /* Increments p */
 }
 
+/* Enable the verifier to insert zext insn for ALU32 ops as needed. */
+bool bpf_jit_needs_zext(void)
+{
+	return true;
+}
+
 struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 {
 	struct bpf_prog *orig_prog = prog;
