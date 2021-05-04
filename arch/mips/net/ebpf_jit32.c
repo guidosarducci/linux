@@ -911,6 +911,7 @@ static bool is_bad_offset(int b_off)
 	return b_off > 0x1ffff || b_off < -0x20000;
 }
 
+#define UNSUPPORTED {return -EINVAL; }
 /* Returns the number of insn slots consumed. */
 static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 			  int this_idx, int exit_idx)
@@ -924,13 +925,6 @@ static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 	u64 t64u;
 	s64 t64s;
 
-	/* No support in 32-bit JIT for 64-bit ALU or load/stores */
-	if (IS_ENABLED(CONFIG_32BIT) &&
-		((BPF_CLASS(insn->code) == BPF_ALU64) ||
-		((BPF_CLASS(insn->code) < BPF_ALU) &&  /* BPF_LD/LDX/ST/STX */
-			(BPF_SIZE(insn->code) == BPF_DW))))
-		return -EINVAL;
-
 	switch (insn->code) {
 	case BPF_ALU64 | BPF_ADD | BPF_K: /* ALU64_IMM */
 	case BPF_ALU64 | BPF_SUB | BPF_K: /* ALU64_IMM */
@@ -941,6 +935,7 @@ static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 	case BPF_ALU64 | BPF_XOR | BPF_K: /* ALU64_IMM */
 	case BPF_ALU64 | BPF_ARSH | BPF_K: /* ALU64_IMM */
 	case BPF_ALU64 | BPF_MOV | BPF_K: /* ALU64_IMM */
+		UNSUPPORTED;
 	case BPF_ALU | BPF_MOV | BPF_K: /* ALU32_IMM */
 	case BPF_ALU | BPF_ADD | BPF_K: /* ALU32_IMM */
 	case BPF_ALU | BPF_SUB | BPF_K: /* ALU32_IMM */
@@ -955,6 +950,7 @@ static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 			return r;
 		break;
 	case BPF_ALU64 | BPF_MUL | BPF_K: /* ALU64_IMM */
+		UNSUPPORTED;
 		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
 		if (dst < 0)
 			return dst;
@@ -971,6 +967,7 @@ static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 		}
 		break;
 	case BPF_ALU64 | BPF_NEG | BPF_K: /* ALU64_IMM */
+		UNSUPPORTED;
 		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
 		if (dst < 0)
 			return dst;
@@ -1041,6 +1038,7 @@ static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 		break;
 	case BPF_ALU64 | BPF_DIV | BPF_K: /* ALU_IMM */
 	case BPF_ALU64 | BPF_MOD | BPF_K: /* ALU_IMM */
+		UNSUPPORTED;
 		if (insn->imm == 0)
 			return -EINVAL;
 		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
@@ -1080,6 +1078,7 @@ static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 	case BPF_ALU64 | BPF_LSH | BPF_X: /* ALU64_REG */
 	case BPF_ALU64 | BPF_RSH | BPF_X: /* ALU64_REG */
 	case BPF_ALU64 | BPF_ARSH | BPF_X: /* ALU64_REG */
+		UNSUPPORTED;
 		src = ebpf_to_mips_reg(ctx, insn, REG_SRC_FP_OK);
 		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
 		if (src < 0 || dst < 0)
@@ -1266,6 +1265,7 @@ static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 		break;
 	case BPF_JMP | BPF_JEQ | BPF_K: /* JMP_IMM */
 	case BPF_JMP | BPF_JNE | BPF_K: /* JMP_IMM */
+		UNSUPPORTED;
 		cmp_eq = (bpf_op == BPF_JEQ);
 		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_FP_OK);
 		if (dst < 0)
@@ -1288,6 +1288,7 @@ static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 	case BPF_JMP | BPF_JGT | BPF_X:
 	case BPF_JMP | BPF_JGE | BPF_X:
 	case BPF_JMP | BPF_JSET | BPF_X:
+		UNSUPPORTED;
 		src = ebpf_to_mips_reg(ctx, insn, REG_SRC_NO_FP);
 		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
 		if (src < 0 || dst < 0)
@@ -1418,6 +1419,7 @@ jeq_common:
 	case BPF_JMP | BPF_JSGE | BPF_K: /* JMP_IMM */
 	case BPF_JMP | BPF_JSLT | BPF_K: /* JMP_IMM */
 	case BPF_JMP | BPF_JSLE | BPF_K: /* JMP_IMM */
+		UNSUPPORTED;
 		cmp_eq = (bpf_op == BPF_JSGE);
 		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_FP_OK);
 		if (dst < 0)
@@ -1493,6 +1495,7 @@ jeq_common:
 	case BPF_JMP | BPF_JGE | BPF_K:
 	case BPF_JMP | BPF_JLT | BPF_K:
 	case BPF_JMP | BPF_JLE | BPF_K:
+		UNSUPPORTED;
 		cmp_eq = (bpf_op == BPF_JGE);
 		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_FP_OK);
 		if (dst < 0)
@@ -1517,6 +1520,7 @@ jeq_common:
 		goto jeq_common;
 
 	case BPF_JMP | BPF_JSET | BPF_K: /* JMP_IMM */
+		UNSUPPORTED;
 		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_FP_OK);
 		if (dst < 0)
 			return dst;
@@ -1562,6 +1566,7 @@ jeq_common:
 		emit_instr(ctx, nop);
 		break;
 	case BPF_LD | BPF_DW | BPF_IMM:
+		UNSUPPORTED;
 		if (insn->src_reg != 0)
 			return -EINVAL;
 		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
@@ -1623,10 +1628,11 @@ jeq_common:
 		}
 		break;
 
+	case BPF_ST | BPF_DW | BPF_MEM:
+		UNSUPPORTED;
 	case BPF_ST | BPF_B | BPF_MEM:
 	case BPF_ST | BPF_H | BPF_MEM:
 	case BPF_ST | BPF_W | BPF_MEM:
-	case BPF_ST | BPF_DW | BPF_MEM:
 		if (insn->dst_reg == BPF_REG_10) {
 			ctx->flags |= EBPF_SEEN_FP;
 			dst = MIPS_R_SP;
@@ -1654,10 +1660,11 @@ jeq_common:
 		}
 		break;
 
+	case BPF_LDX | BPF_DW | BPF_MEM:
+		UNSUPPORTED;
 	case BPF_LDX | BPF_B | BPF_MEM:
 	case BPF_LDX | BPF_H | BPF_MEM:
 	case BPF_LDX | BPF_W | BPF_MEM:
-	case BPF_LDX | BPF_DW | BPF_MEM:
 		if (insn->src_reg == BPF_REG_10) {
 			ctx->flags |= EBPF_SEEN_FP;
 			src = MIPS_R_SP;
@@ -1687,12 +1694,13 @@ jeq_common:
 		}
 		break;
 
+	case BPF_STX | BPF_DW | BPF_XADD:
+	case BPF_STX | BPF_DW | BPF_MEM:
+		UNSUPPORTED;
 	case BPF_STX | BPF_B | BPF_MEM:
 	case BPF_STX | BPF_H | BPF_MEM:
 	case BPF_STX | BPF_W | BPF_MEM:
-	case BPF_STX | BPF_DW | BPF_MEM:
 	case BPF_STX | BPF_W | BPF_XADD:
-	case BPF_STX | BPF_DW | BPF_XADD:
 		if (insn->dst_reg == BPF_REG_10) {
 			ctx->flags |= EBPF_SEEN_FP;
 			dst = MIPS_R_SP;
