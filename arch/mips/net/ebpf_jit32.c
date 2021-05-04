@@ -581,6 +581,30 @@ static int build_int_epilogue(struct jit_ctx *ctx, int dest_reg)
 	return 0;
 }
 
+/* Sign-extend into HI 32-bit register of pair.*/
+static void gen_signext_insn(int dst, struct jit_ctx *ctx)
+{
+	/* No high word to extend since these aren't real reg pairs*/
+	if (dst == MIPS_R_SP || dst == MIPS_R_AT)
+		return;
+
+	emit_instr(ctx, sra, HI(dst), LO(dst), 31);
+}
+
+/*
+ * Zero-extend into HI 32-bit register of pair, if either forced to or
+ * BPF verifier does not insert its own zext insns.
+ */
+static void gen_zext_insn(int dst, bool force, struct jit_ctx *ctx)
+{
+	/* No high word to extend since these aren't real reg pairs*/
+	if (dst == MIPS_R_SP || dst == MIPS_R_AT)
+		return;
+
+	if (!ctx->skf->aux->verifier_zext || force)
+		emit_instr(ctx, and, HI(dst), MIPS_R_ZERO, MIPS_R_ZERO);
+}
+
 static void gen_imm_to_reg(const struct bpf_insn *insn, int reg,
 			   struct jit_ctx *ctx)
 {
