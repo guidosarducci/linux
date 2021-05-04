@@ -569,6 +569,30 @@ static int build_int_epilogue(struct jit_ctx *ctx, int dest_reg)
 	return 0;
 }
 
+/* Sign-extend into HI 32-bit register of pair.*/
+static void gen_signext_insn(int dst, struct jit_ctx *ctx)
+{
+	/* No high word to extend since these aren't real reg pairs*/
+	if (dst == MIPS_R_SP || dst == MIPS_R_AT)
+		return;
+
+	emit_instr(ctx, sra, HI(dst), LO(dst), 31);
+}
+
+/*
+ * Zero-extend into HI 32-bit register of pair, if either forced to or
+ * BPF verifier does not insert its own zext insns.
+ */
+static void gen_zext_insn(int dst, bool force, struct jit_ctx *ctx)
+{
+	/* No high word to extend since these aren't real reg pairs*/
+	if (dst == MIPS_R_SP || dst == MIPS_R_AT)
+		return;
+
+	if (!ctx->skf->aux->verifier_zext || force)
+		emit_instr(ctx, and, HI(dst), MIPS_R_ZERO, MIPS_R_ZERO);
+}
+
 static void gen_imm_to_reg(const struct bpf_insn *insn, int reg,
 			   struct jit_ctx *ctx)
 {
@@ -1120,6 +1144,11 @@ static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
 		if (src < 0 || dst < 0)
 			return -EINVAL;
+		/* Special BPF_MOV zext insn from verifier. */
+		if (insn_is_zext(insn)) {
+			gen_zext_insn(dst, true, ctx);
+			break;
+		}
 		td = get_reg_val_type(ctx, this_idx, insn->dst_reg);
 		if (td == REG_64BIT) {
 			/* sign extend */
@@ -1710,6 +1739,9 @@ jeq_common:
 		       this_idx, (unsigned int)insn->code);
 		return -EINVAL;
 	}
+	if ((bpf_class == BPF_ALU && !(bpf_op == BPF_END && insn->imm == 64)) ||
+	    (bpf_class == BPF_LDX && bpf_size != BPF_DW))
+		gen_zext_insn(dst, false, ctx);
 	return 1;
 }
 
