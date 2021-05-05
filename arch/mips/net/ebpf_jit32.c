@@ -1184,7 +1184,7 @@ static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 	case BPF_ALU | BPF_LSH | BPF_X: /* ALU_REG */
 	case BPF_ALU | BPF_RSH | BPF_X: /* ALU_REG */
 	case BPF_ALU | BPF_ARSH | BPF_X: /* ALU_REG */
-		src = ebpf_to_mips_reg(ctx, insn, REG_SRC_NO_FP);
+		src = ebpf_to_mips_reg(ctx, insn, REG_SRC_FP_OK);
 		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
 		if (src < 0 || dst < 0)
 			return -EINVAL;
@@ -1194,52 +1194,65 @@ static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 			break;
 		}
 		did_move = false;
+		if (insn->src_reg == BPF_REG_10) {
+			if (bpf_op == BPF_MOV) {
+				emit_instr(ctx, addiu, LO(dst),
+						MIPS_R_SP, ctx->bpf_stack_off);
+				did_move = true;
+			} else { /* Use T8 reg pair tmp for ALU32 arithmetic */
+				src = MIPS_R_T8;
+				emit_instr(ctx, addiu, LO(src),
+						MIPS_R_SP, ctx->bpf_stack_off);
+			}
+		}
 		switch (bpf_op) {
 		case BPF_MOV:
 			if (!did_move)
-				emit_instr(ctx, addu, dst, src, MIPS_R_ZERO);
+				emit_instr(ctx, move, LO(dst), LO(src));
 			break;
 		case BPF_ADD:
-			emit_instr(ctx, addu, dst, dst, src);
+			emit_instr(ctx, addu, LO(dst), LO(dst), LO(src));
 			break;
 		case BPF_SUB:
-			emit_instr(ctx, subu, dst, dst, src);
+			emit_instr(ctx, subu, LO(dst), LO(dst), LO(src));
 			break;
 		case BPF_XOR:
-			emit_instr(ctx, xor, dst, dst, src);
+			emit_instr(ctx, xor, LO(dst), LO(dst), LO(src));
 			break;
 		case BPF_OR:
-			emit_instr(ctx, or, dst, dst, src);
+			emit_instr(ctx, or, LO(dst), LO(dst), LO(src));
 			break;
 		case BPF_AND:
-			emit_instr(ctx, and, dst, dst, src);
+			emit_instr(ctx, and, LO(dst), LO(dst), LO(src));
 			break;
 		case BPF_MUL:
-			emit_instr(ctx, mul, dst, dst, src);
+			emit_instr(ctx, mul, LO(dst), LO(dst), LO(src));
 			break;
 		case BPF_DIV:
 		case BPF_MOD:
 			if (MIPS_ISA_REV >= 6) {
 				if (bpf_op == BPF_DIV)
-					emit_instr(ctx, divu_r6, dst, dst, src);
+					emit_instr(ctx, divu_r6, LO(dst),
+							LO(dst), LO(src));
 				else
-					emit_instr(ctx, modu, dst, dst, src);
+					emit_instr(ctx, modu, LO(dst),
+							LO(dst), LO(src));
 				break;
 			}
-			emit_instr(ctx, divu, dst, src);
+			emit_instr(ctx, divu, LO(dst), LO(src));
 			if (bpf_op == BPF_DIV)
-				emit_instr(ctx, mflo, dst);
+				emit_instr(ctx, mflo, LO(dst));
 			else
-				emit_instr(ctx, mfhi, dst);
+				emit_instr(ctx, mfhi, LO(dst));
 			break;
 		case BPF_LSH:
-			emit_instr(ctx, sllv, dst, dst, src);
+			emit_instr(ctx, sllv, LO(dst), LO(dst), LO(src));
 			break;
 		case BPF_RSH:
-			emit_instr(ctx, srlv, dst, dst, src);
+			emit_instr(ctx, srlv, LO(dst), LO(dst), LO(src));
 			break;
 		case BPF_ARSH:
-			emit_instr(ctx, srav, dst, dst, src);
+			emit_instr(ctx, srav, LO(dst), LO(dst), LO(src));
 			break;
 		default:
 			pr_err("ALU_REG NOT HANDLED\n");
