@@ -1655,152 +1655,159 @@ jeq_common:
 		break;
 
 	case BPF_ST | BPF_DW | BPF_MEM:
-		UNSUPPORTED;
 	case BPF_ST | BPF_B | BPF_MEM:
 	case BPF_ST | BPF_H | BPF_MEM:
 	case BPF_ST | BPF_W | BPF_MEM:
-		if (insn->dst_reg == BPF_REG_10) {
-			ctx->flags |= EBPF_SEEN_FP;
-			dst = MIPS_R_SP;
-			mem_off = insn->off + ctx->bpf_stack_off;
-		} else {
-			dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
-			if (dst < 0)
-				return dst;
-			mem_off = insn->off;
-		}
+		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_FP_OK);
+		if (dst < 0)
+			return -EINVAL;
+		mem_off = insn->off;
 		gen_imm_to_reg(insn, MIPS_R_AT, ctx);
+
+		if (insn->dst_reg == BPF_REG_10) {
+			dst = MIPS_R_SP;
+			mem_off += ctx->bpf_stack_off;
+		}
 		switch (BPF_SIZE(insn->code)) {
 		case BPF_B:
-			emit_instr(ctx, sb, MIPS_R_AT, mem_off, dst);
+			emit_instr(ctx, sb, MIPS_R_AT, mem_off, LO(dst));
 			break;
 		case BPF_H:
-			emit_instr(ctx, sh, MIPS_R_AT, mem_off, dst);
+			emit_instr(ctx, sh, MIPS_R_AT, mem_off, LO(dst));
 			break;
 		case BPF_W:
-			emit_instr(ctx, sw, MIPS_R_AT, mem_off, dst);
+			emit_instr(ctx, sw, MIPS_R_AT, mem_off, LO(dst));
 			break;
 		case BPF_DW:
-			emit_instr(ctx, sd, MIPS_R_AT, mem_off, dst);
+			/* Memory order == register order in pair */
+			emit_instr(ctx, sw, MIPS_R_AT, OFFLO(mem_off), LO(dst));
+			if (insn->imm < 0) {
+				emit_instr(ctx, nor, MIPS_R_AT,
+						MIPS_R_ZERO, MIPS_R_ZERO);
+				emit_instr(ctx, sw, MIPS_R_AT,
+						OFFHI(mem_off), LO(dst));
+			} else {
+				emit_instr(ctx, sw, MIPS_R_ZERO,
+						OFFHI(mem_off), LO(dst));
+			}
 			break;
 		}
 		break;
 
 	case BPF_LDX | BPF_DW | BPF_MEM:
-		UNSUPPORTED;
 	case BPF_LDX | BPF_B | BPF_MEM:
 	case BPF_LDX | BPF_H | BPF_MEM:
 	case BPF_LDX | BPF_W | BPF_MEM:
-		if (insn->src_reg == BPF_REG_10) {
-			ctx->flags |= EBPF_SEEN_FP;
-			src = MIPS_R_SP;
-			mem_off = insn->off + ctx->bpf_stack_off;
-		} else {
-			src = ebpf_to_mips_reg(ctx, insn, REG_SRC_NO_FP);
-			if (src < 0)
-				return src;
-			mem_off = insn->off;
-		}
 		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
-		if (dst < 0)
-			return dst;
+		src = ebpf_to_mips_reg(ctx, insn, REG_SRC_FP_OK);
+		if (src < 0 || dst < 0)
+			return -EINVAL;
+		mem_off = insn->off;
+
+		if (insn->src_reg == BPF_REG_10) {
+			src = MIPS_R_SP;
+			mem_off += ctx->bpf_stack_off;
+		}
 		switch (BPF_SIZE(insn->code)) {
 		case BPF_B:
-			emit_instr(ctx, lbu, dst, mem_off, src);
+			emit_instr(ctx, lbu, LO(dst), mem_off, LO(src));
 			break;
 		case BPF_H:
-			emit_instr(ctx, lhu, dst, mem_off, src);
+			emit_instr(ctx, lhu, LO(dst), mem_off, LO(src));
 			break;
 		case BPF_W:
-			emit_instr(ctx, lw, dst, mem_off, src);
+			emit_instr(ctx, lw, LO(dst), mem_off, LO(src));
 			break;
 		case BPF_DW:
-			emit_instr(ctx, ld, dst, mem_off, src);
+			/*
+			 * Careful: update HI(dst) first in case dst == src,
+			 * since only LO(src) is the usable pointer.
+			 */
+			emit_instr(ctx, lw, HI(dst), OFFHI(mem_off), LO(src));
+			emit_instr(ctx, lw, LO(dst), OFFLO(mem_off), LO(src));
 			break;
 		}
 		break;
 
 	case BPF_STX | BPF_DW | BPF_XADD:
-	case BPF_STX | BPF_DW | BPF_MEM:
 		UNSUPPORTED;
+	case BPF_STX | BPF_W | BPF_XADD:
+		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_FP_OK);
+		src = ebpf_to_mips_reg(ctx, insn, REG_SRC_FP_OK);
+		if (src < 0 || dst < 0)
+			return -EINVAL;
+		mem_off = insn->off;
+		/*
+		 * Drop reg pair scheme for more efficient temp register usage
+		 * given BPF_W mode.
+		 */
+		dst = LO(dst);
+		src = LO(src);
+
+		if (insn->dst_reg == BPF_REG_10) {
+			dst = MIPS_R_SP;
+			mem_off += ctx->bpf_stack_off;
+		}
+		if (insn->src_reg == BPF_REG_10) { /* TODO also for MIPS64*/
+			src = MIPS_R_T8;
+			emit_instr(ctx, addiu, src,
+						MIPS_R_SP, ctx->bpf_stack_off);
+		}
+		/*
+		 * If mem_off does not fit within the 9 bit ll/sc instruction
+		 * immediate field, use a temp reg.
+		 */
+		if (MIPS_ISA_REV >= 6 &&
+		    (mem_off >= BIT(8) || mem_off < -BIT(8))) {
+			emit_instr(ctx, addiu, MIPS_R_T9, dst, mem_off);
+			mem_off = 0;
+			dst = MIPS_R_T9;
+		}
+		emit_instr(ctx, ll, MIPS_R_AT, mem_off, dst);
+		emit_instr(ctx, addu, MIPS_R_AT, MIPS_R_AT, src);
+		emit_instr(ctx, sc, MIPS_R_AT, mem_off, dst);
+		/*
+		 * On failure back up to LL (-4 insns of 4 bytes each)
+		 */
+		emit_instr(ctx, beqz, MIPS_R_AT, -4 * 4);
+		emit_instr(ctx, nop);
+		break;
+
+	case BPF_STX | BPF_DW | BPF_MEM:
 	case BPF_STX | BPF_B | BPF_MEM:
 	case BPF_STX | BPF_H | BPF_MEM:
 	case BPF_STX | BPF_W | BPF_MEM:
-	case BPF_STX | BPF_W | BPF_XADD:
+		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_FP_OK);
+		src = ebpf_to_mips_reg(ctx, insn, REG_SRC_FP_OK);
+		if (src < 0 || dst < 0)
+			return -EINVAL;
+		mem_off = insn->off;
+
 		if (insn->dst_reg == BPF_REG_10) {
-			ctx->flags |= EBPF_SEEN_FP;
 			dst = MIPS_R_SP;
-			mem_off = insn->off + ctx->bpf_stack_off;
-		} else {
-			dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
-			if (dst < 0)
-				return dst;
-			mem_off = insn->off;
+			mem_off += ctx->bpf_stack_off;
 		}
-		src = ebpf_to_mips_reg(ctx, insn, REG_SRC_NO_FP);
-		if (src < 0)
-			return src;
-		if (BPF_MODE(insn->code) == BPF_XADD) {
-			/*
-			 * If mem_off does not fit within the 9 bit ll/sc
-			 * instruction immediate field, use a temp reg.
-			 */
-			if (MIPS_ISA_REV >= 6 &&
-			    (mem_off >= BIT(8) || mem_off < -BIT(8))) {
-				emit_instr(ctx, daddiu, MIPS_R_T6,
-						dst, mem_off);
-				mem_off = 0;
-				dst = MIPS_R_T6;
-			}
-			switch (BPF_SIZE(insn->code)) {
-			case BPF_W:
-				if (get_reg_val_type(ctx, this_idx, insn->src_reg) == REG_32BIT) {
-					emit_instr(ctx, sll, MIPS_R_AT, src, 0);
-					src = MIPS_R_AT;
-				}
-				emit_instr(ctx, ll, MIPS_R_T8, mem_off, dst);
-				emit_instr(ctx, addu, MIPS_R_T8, MIPS_R_T8, src);
-				emit_instr(ctx, sc, MIPS_R_T8, mem_off, dst);
-				/*
-				 * On failure back up to LL (-4
-				 * instructions of 4 bytes each
-				 */
-				emit_instr(ctx, beq, MIPS_R_T8, MIPS_R_ZERO, -4 * 4);
-				emit_instr(ctx, nop);
-				break;
-			case BPF_DW:
-				if (get_reg_val_type(ctx, this_idx, insn->src_reg) == REG_32BIT) {
-					emit_instr(ctx, daddu, MIPS_R_AT, src, MIPS_R_ZERO);
-					emit_instr(ctx, dinsu, MIPS_R_AT, MIPS_R_ZERO, 32, 32);
-					src = MIPS_R_AT;
-				}
-				emit_instr(ctx, lld, MIPS_R_T8, mem_off, dst);
-				emit_instr(ctx, daddu, MIPS_R_T8, MIPS_R_T8, src);
-				emit_instr(ctx, scd, MIPS_R_T8, mem_off, dst);
-				emit_instr(ctx, beq, MIPS_R_T8, MIPS_R_ZERO, -4 * 4);
-				emit_instr(ctx, nop);
-				break;
-			}
-		} else { /* BPF_MEM */
-			switch (BPF_SIZE(insn->code)) {
-			case BPF_B:
-				emit_instr(ctx, sb, src, mem_off, dst);
-				break;
-			case BPF_H:
-				emit_instr(ctx, sh, src, mem_off, dst);
-				break;
-			case BPF_W:
-				emit_instr(ctx, sw, src, mem_off, dst);
-				break;
-			case BPF_DW:
-				if (get_reg_val_type(ctx, this_idx, insn->src_reg) == REG_32BIT) {
-					emit_instr(ctx, daddu, MIPS_R_AT, src, MIPS_R_ZERO);
-					emit_instr(ctx, dinsu, MIPS_R_AT, MIPS_R_ZERO, 32, 32);
-					src = MIPS_R_AT;
-				}
-				emit_instr(ctx, sd, src, mem_off, dst);
-				break;
-			}
+		/* Use temp T8 reg pair to hold BPF FP if src. */
+		if (insn->src_reg == BPF_REG_10) { /* TODO also for MIPS64*/
+			src = MIPS_R_T8;
+			emit_instr(ctx, addiu, LO(src),
+						MIPS_R_SP, ctx->bpf_stack_off);
+			emit_instr(ctx, move, HI(src), MIPS_R_ZERO);
+		}
+		switch (BPF_SIZE(insn->code)) {
+		case BPF_B:
+			emit_instr(ctx, sb, LO(src), mem_off, LO(dst));
+			break;
+		case BPF_H:
+			emit_instr(ctx, sh, LO(src), mem_off, LO(dst));
+			break;
+		case BPF_W:
+			emit_instr(ctx, sw, LO(src), mem_off, LO(dst));
+			break;
+		case BPF_DW:
+			emit_instr(ctx, sw, LO(src), OFFLO(mem_off), LO(dst));
+			emit_instr(ctx, sw, HI(src), OFFHI(mem_off), LO(dst));
+			break;
 		}
 		break;
 
