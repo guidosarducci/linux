@@ -1571,14 +1571,11 @@ jeq_common:
 		emit_instr(ctx, nop);
 		break;
 	case BPF_LD | BPF_DW | BPF_IMM:
-		UNSUPPORTED;
-		if (insn->src_reg != 0)
-			return -EINVAL;
 		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
 		if (dst < 0)
 			return dst;
-		t64 = ((u64)(u32)insn->imm) | ((u64)(insn + 1)->imm << 32);
-		emit_const_to_reg(ctx, dst, t64);
+		gen_imm_to_reg(insn, LO(dst), ctx);
+		gen_imm_to_reg(insn+1, HI(dst), ctx);
 		return 2; /* Double slot insn */
 
 	case BPF_JMP | BPF_CALL:
