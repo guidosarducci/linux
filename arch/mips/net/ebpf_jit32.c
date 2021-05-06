@@ -645,7 +645,7 @@ static int gen_imm_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 			int idx)
 {
 	int dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
-	int upper_bound, lower_bound;
+	int upper_bound, lower_bound, shamt;
 	int imm = insn->imm;
 
 	if (dst < 0)
@@ -725,13 +725,47 @@ static int gen_imm_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 			emit_instr(ctx, daddiu, dst, dst, -imm);
 			break;
 		case BPF_ALU64 | BPF_ARSH:
-			emit_instr(ctx, dsra_safe, dst, dst, imm & 0x3f);
+			shamt = imm & 0x3f;
+			if (shamt >= 32) {
+				emit_instr(ctx, sra, LO(dst),
+							HI(dst), shamt - 32);
+				emit_instr(ctx, sra, HI(dst), HI(dst), 31);
+			} else if (shamt > 0) {
+				emit_instr(ctx, srl, LO(dst), LO(dst), shamt);
+				emit_instr(ctx, ins, LO(dst), HI(dst),
+							32 - shamt, shamt);
+				emit_instr(ctx, sra, HI(dst), HI(dst), shamt);
+			}
 			break;
 		case BPF_ALU64 | BPF_RSH:
-			emit_instr(ctx, dsrl_safe, dst, dst, imm & 0x3f);
+			shamt = imm & 0x3f;
+			if (shamt >= 32) {
+				emit_instr(ctx, srl, LO(dst),
+							HI(dst), shamt - 32);
+				emit_instr(ctx, and, HI(dst),
+							HI(dst), MIPS_R_ZERO);
+			} else if (shamt > 0) {
+				emit_instr(ctx, srl, LO(dst), LO(dst), shamt);
+				emit_instr(ctx, ins, LO(dst), HI(dst),
+							32 - shamt, shamt);
+				emit_instr(ctx, srl, HI(dst), HI(dst), shamt);
+			}
 			break;
 		case BPF_ALU64 | BPF_LSH:
-			emit_instr(ctx, dsll_safe, dst, dst, imm & 0x3f);
+			shamt = imm & 0x3f;
+			if (shamt >= 32) {
+				emit_instr(ctx, sll, HI(dst),
+							LO(dst), shamt - 32);
+				emit_instr(ctx, and, LO(dst),
+							LO(dst), MIPS_R_ZERO);
+			} else if (shamt > 0) {
+				emit_instr(ctx, srl, MIPS_R_AT,
+							LO(dst), 32 - shamt);
+				emit_instr(ctx, sll, HI(dst), HI(dst), shamt);
+				emit_instr(ctx, sll, LO(dst), LO(dst), shamt);
+				emit_instr(ctx, or, HI(dst),
+							HI(dst), MIPS_R_AT);
+			}
 			break;
 		case BPF_ALU | BPF_RSH:
 			emit_instr(ctx, srl, LO(dst), LO(dst), imm & 0x1f);
@@ -951,10 +985,10 @@ static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 	switch (insn->code) {
 	case BPF_ALU64 | BPF_ADD | BPF_K: /* ALU64_IMM */
 	case BPF_ALU64 | BPF_SUB | BPF_K: /* ALU64_IMM */
+		UNSUPPORTED;
 	case BPF_ALU64 | BPF_LSH | BPF_K: /* ALU64_IMM */
 	case BPF_ALU64 | BPF_RSH | BPF_K: /* ALU64_IMM */
 	case BPF_ALU64 | BPF_ARSH | BPF_K: /* ALU64_IMM */
-		UNSUPPORTED;
 	case BPF_ALU64 | BPF_XOR | BPF_K: /* ALU64_IMM */
 	case BPF_ALU64 | BPF_MOV | BPF_K: /* ALU64_IMM */
 	case BPF_ALU64 | BPF_OR | BPF_K: /* ALU64_IMM */
