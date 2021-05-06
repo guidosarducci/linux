@@ -1599,15 +1599,6 @@ jeq_common:
 		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
 		if (dst < 0)
 			return dst;
-		td = get_reg_val_type(ctx, this_idx, insn->dst_reg);
-		if (insn->imm == 64 && td == REG_32BIT)
-			emit_instr(ctx, dinsu, dst, MIPS_R_ZERO, 32, 32);
-
-		if (insn->imm != 64 && td == REG_64BIT) {
-			/* sign extend */
-			emit_instr(ctx, sll, dst, dst, 0);
-		}
-
 #ifdef __BIG_ENDIAN
 		need_swap = (BPF_SRC(insn->code) == BPF_FROM_LE);
 #else
@@ -1615,17 +1606,19 @@ jeq_common:
 #endif
 		if (insn->imm == 16) {
 			if (need_swap)
-				emit_instr(ctx, wsbh, dst, dst);
-			emit_instr(ctx, andi, dst, dst, 0xffff);
+				emit_instr(ctx, wsbh, LO(dst), LO(dst));
+			emit_instr(ctx, andi, LO(dst), LO(dst), 0xffff);
 		} else if (insn->imm == 32) {
 			if (need_swap) {
-				emit_instr(ctx, wsbh, dst, dst);
-				emit_instr(ctx, rotr, dst, dst, 16);
+				emit_instr(ctx, wsbh, LO(dst), LO(dst));
+				emit_instr(ctx, rotr, LO(dst), LO(dst), 16);
 			}
 		} else { /* 64-bit*/
 			if (need_swap) {
-				emit_instr(ctx, dsbh, dst, dst);
-				emit_instr(ctx, dshd, dst, dst);
+				emit_instr(ctx, wsbh, MIPS_R_AT, LO(dst));
+				emit_instr(ctx, wsbh, LO(dst), HI(dst));
+				emit_instr(ctx, rotr, HI(dst), MIPS_R_AT, 16);
+				emit_instr(ctx, rotr, LO(dst), LO(dst), 16);
 			}
 		}
 		break;
