@@ -478,13 +478,29 @@ static int build_int_epilogue(struct jit_ctx *ctx, int dest_reg)
 	int stack_adjust = ctx->stack_size;
 	int store_offset = stack_adjust - sizeof(long);
 	enum reg_val_type td;
-	int r0 = MIPS_R_V0;
+	int r0 = bpf2mips[BPF_REG_0].reg;
 
-	if (dest_reg == MIPS_R_RA) {
-		/* Don't let zero extended value escape. */
-		td = get_reg_val_type(ctx, prog->len, BPF_REG_0);
-		if (td == REG_64BIT)
-			emit_instr(ctx, sll, r0, r0, 0);
+	/*
+	 * Returns from BPF2BPF calls consistently use the BPF 64-bit ABI
+	 * i.e. register usage and mapping between JIT and OS is unchanged.
+	 * Returning to the kernel must follow the N64 or O32 ABI, and may
+	 * require fixups to register usage or mapping.
+	 */
+	if (dest_reg == MIPS_R_RA && !ctx->skf->is_func) {
+		if (is64bit()) {
+			/* Don't let zero extended value escape. */
+			td = get_reg_val_type(ctx, prog->len, BPF_REG_0);
+			if (td == REG_64BIT)
+				emit_instr(ctx, sll, r0, r0, 0);
+		} else if (isbigend()) { /* and 32-bit */
+			/*
+			 * O32 ABI specifies 32-bit return value always placed
+			 * in MIPS_R_V0 regardless of native endianness. This
+			 * is in the wrong position in BPF R0 reg pair on
+			 * big-endian systems, so relocate.
+			 */
+			emit_instr(ctx, move, MIPS_R_V0, LO(r0));
+		}
 	}
 
 	if (ctx->flags & EBPF_SAVE_RA) {
