@@ -1051,30 +1051,39 @@ static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 			return r;
 		break;
 	case BPF_ALU64 | BPF_MUL | BPF_K: /* ALU64_IMM */
-		UNSUPPORTED;
 		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
 		if (dst < 0)
 			return dst;
-		if (get_reg_val_type(ctx, this_idx, insn->dst_reg) == REG_32BIT)
-			emit_instr(ctx, dinsu, dst, MIPS_R_ZERO, 32, 32);
 		if (insn->imm == 1) /* Mult by 1 is a nop */
 			break;
-		gen_imm_to_reg(insn, MIPS_R_AT, ctx);
+		src = MIPS_R_T8; /* Use tmp reg pair for imm */
+		gen_imm_to_reg(insn, LO(src), ctx);
+		emit_instr(ctx, sra, HI(src), LO(src), 31);
+		emit_instr(ctx, mul, HI(dst), HI(dst), LO(src));
+		emit_instr(ctx, mul, MIPS_R_AT, LO(dst), HI(src));
+		emit_instr(ctx, addu, HI(dst), HI(dst), MIPS_R_AT);
 		if (MIPS_ISA_REV >= 6) {
-			emit_instr(ctx, dmulu, dst, dst, MIPS_R_AT);
+			emit_instr(ctx, mulu, LO(dst), LO(dst), LO(src));
+			emit_instr(ctx, muhu, MIPS_R_AT, LO(dst), LO(src));
 		} else {
-			emit_instr(ctx, dmultu, MIPS_R_AT, dst);
-			emit_instr(ctx, mflo, dst);
+			emit_instr(ctx, multu, LO(dst), LO(src));
+			emit_instr(ctx, mfhi, MIPS_R_AT);
+			emit_instr(ctx, mflo, LO(dst));
 		}
+		emit_instr(ctx, addu, HI(dst), HI(dst), MIPS_R_AT);
 		break;
 	case BPF_ALU64 | BPF_NEG | BPF_K: /* ALU64_IMM */
-		UNSUPPORTED;
 		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
 		if (dst < 0)
 			return dst;
-		if (get_reg_val_type(ctx, this_idx, insn->dst_reg) == REG_32BIT)
-			emit_instr(ctx, dinsu, dst, MIPS_R_ZERO, 32, 32);
-		emit_instr(ctx, dsubu, dst, MIPS_R_ZERO, dst);
+		emit_instr(ctx, subu, LO(dst), MIPS_R_ZERO, LO(dst));
+		emit_instr(ctx, subu, HI(dst), MIPS_R_ZERO, HI(dst));
+		emit_instr(ctx, sltu, MIPS_R_AT, MIPS_R_ZERO, LO(dst));
+		/* sltu sets all bits 1 in R6 ISA i.e. == -1 */
+		if (MIPS_ISA_REV >= 6)
+			emit_instr(ctx, addu, HI(dst), HI(dst), MIPS_R_AT);
+		else
+			emit_instr(ctx, subu, HI(dst), HI(dst), MIPS_R_AT);
 		break;
 	case BPF_ALU | BPF_MUL | BPF_K: /* ALU_IMM */
 		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
@@ -1123,35 +1132,96 @@ static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 		else
 			emit_instr(ctx, mfhi, LO(dst));
 		break;
-	case BPF_ALU64 | BPF_DIV | BPF_K: /* ALU_IMM */
-	case BPF_ALU64 | BPF_MOD | BPF_K: /* ALU_IMM */
-		UNSUPPORTED;
-		if (insn->imm == 0)
-			return -EINVAL;
+	case BPF_ALU64 | BPF_DIV | BPF_K: /* ALU64_IMM */
+	case BPF_ALU64 | BPF_MOD | BPF_K: /* ALU64_IMM */
 		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
 		if (dst < 0)
 			return dst;
-		if (get_reg_val_type(ctx, this_idx, insn->dst_reg) == REG_32BIT)
-			emit_instr(ctx, dinsu, dst, MIPS_R_ZERO, 32, 32);
+		/* div by 1 is a nop, mod by 1 is zero */
 		if (insn->imm == 1) {
-			/* div by 1 is a nop, mod by 1 is zero */
-			if (bpf_op == BPF_MOD)
-				emit_instr(ctx, addu, dst, MIPS_R_ZERO, MIPS_R_ZERO);
+			if (bpf_op == BPF_MOD) {
+				emit_instr(ctx, move, LO(dst), MIPS_R_ZERO);
+				emit_instr(ctx, move, HI(dst), MIPS_R_ZERO);
+			}
+			break;
+		}
+		/* check for overflow and optimize div/mod by -1 */
+		if (insn->imm == -1) {
+			b_off = bpf_op == BPF_MOD ? 5 * 4 : 6 * 4;
+			emit_instr(ctx, bnez, LO(dst), b_off);
+			/* Delay slot */
+			emit_instr(ctx, lui, MIPS_R_AT, -0x8000);
+			emit_instr(ctx, bne, HI(dst), MIPS_R_AT, b_off - 2 * 4);
+			emit_instr(ctx, nop);
+			/* Overflow confirmed */
+			if (bpf_op == BPF_MOD) {
+				emit_instr(ctx, b, 3 * 4);
+				emit_instr(ctx, nop);
+			} else {
+				emit_instr(ctx, move, LO(dst), MIPS_R_ZERO);
+				emit_instr(ctx, b, 5 * 4);
+				/* Delay slot */
+				emit_instr(ctx, move, HI(dst), MIPS_R_ZERO);
+			}
+			/* div by -1 is neg, mod by -1 is zero */
+			if (bpf_op == BPF_MOD) {
+				emit_instr(ctx, move, LO(dst), MIPS_R_ZERO);
+				emit_instr(ctx, move, HI(dst), MIPS_R_ZERO);
+			} else {
+				emit_instr(ctx, subu, LO(dst),
+							MIPS_R_ZERO, LO(dst));
+				emit_instr(ctx, subu, HI(dst),
+							MIPS_R_ZERO, HI(dst));
+				emit_instr(ctx, sltu, MIPS_R_AT,
+							MIPS_R_ZERO, LO(dst));
+				/* sltu sets all bits 1 in R6 ISA i.e. == -1 */
+				if (MIPS_ISA_REV >= 6)
+					emit_instr(ctx, addu, HI(dst),
+							HI(dst), MIPS_R_AT);
+				else
+					emit_instr(ctx, subu, HI(dst),
+							HI(dst), MIPS_R_AT);
+			}
 			break;
 		}
 		gen_imm_to_reg(insn, MIPS_R_AT, ctx);
+
+		/* Make dst unsigned using neg and shift sign to divisor */
+		emit_instr(ctx, bgez, HI(dst), 6 * 4);
+		emit_instr(ctx, subu, MIPS_R_T8, MIPS_R_ZERO, LO(dst));
+		emit_instr(ctx, subu, HI(dst), MIPS_R_ZERO, HI(dst));
+		emit_instr(ctx, sltu, LO(dst), MIPS_R_ZERO, MIPS_R_T8);
+		/* sltu sets all bits 1 in R6 ISA i.e. == -1 */
+		if (MIPS_ISA_REV >= 6)
+			emit_instr(ctx, addu, HI(dst), HI(dst), LO(dst));
+		else
+			emit_instr(ctx, subu, HI(dst), HI(dst), LO(dst));
+		emit_instr(ctx, move, LO(dst), MIPS_R_T8);
+		emit_instr(ctx, subu, MIPS_R_AT, MIPS_R_ZERO, MIPS_R_AT);
+
 		if (MIPS_ISA_REV >= 6) {
-			if (bpf_op == BPF_DIV)
-				emit_instr(ctx, ddivu_r6, dst, dst, MIPS_R_AT);
-			else
-				emit_instr(ctx, modu, dst, dst, MIPS_R_AT);
+			if (bpf_op == BPF_DIV) {
+				emit_instr(ctx, div_r6, LO(dst), LO(dst), MIPS_R_AT);
+				emit_instr(ctx, div_r6, HI(dst), HI(dst), MIPS_R_AT);
+				emit_instr(ctx, mod, MIPS_R_AT, HI(dst), MIPS_R_AT);
+				emit_instr(ctx, addu, LO(dst), LO(dst), MIPS_R_AT);
+			} else {
+				emit_instr(ctx, mod, LO(dst), LO(dst), MIPS_R_AT);
+				gen_zext_insn(dst, true, ctx);
+			}
 			break;
 		}
-		emit_instr(ctx, ddivu, dst, MIPS_R_AT);
-		if (bpf_op == BPF_DIV)
-			emit_instr(ctx, mflo, dst);
-		else
-			emit_instr(ctx, mfhi, dst);
+		emit_instr(ctx, div, LO(dst), MIPS_R_AT);
+		if (bpf_op == BPF_DIV) {
+			emit_instr(ctx, mflo, LO(dst));
+			emit_instr(ctx, div, HI(dst), MIPS_R_AT);
+			emit_instr(ctx, mflo, HI(dst));
+			emit_instr(ctx, mfhi, MIPS_R_AT);
+			emit_instr(ctx, addu, LO(dst), LO(dst), MIPS_R_AT);
+		} else {
+			emit_instr(ctx, mfhi, LO(dst));
+			gen_zext_insn(dst, true, ctx);
+		}
 		break;
 	case BPF_ALU64 | BPF_MUL | BPF_X: /* ALU64_REG */
 	case BPF_ALU64 | BPF_DIV | BPF_X: /* ALU64_REG */
