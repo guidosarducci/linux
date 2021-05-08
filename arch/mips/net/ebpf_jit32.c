@@ -719,10 +719,31 @@ static int gen_imm_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 			emit_instr(ctx, xori, LO(dst), LO(dst), imm);
 			break;
 		case BPF_ALU64 | BPF_ADD:
-			emit_instr(ctx, daddiu, dst, dst, imm);
+			emit_instr(ctx, addiu, LO(dst), LO(dst), imm);
+			if (imm < 0)
+				emit_instr(ctx, addiu, HI(dst), HI(dst), -1);
+			emit_instr(ctx, sltiu, MIPS_R_AT, LO(dst), imm);
+			/* sltu sets all bits 1 in R6 ISA i.e. == -1 */
+			if (MIPS_ISA_REV >= 6)
+				emit_instr(ctx, subu, HI(dst),
+							HI(dst), MIPS_R_AT);
+			else
+				emit_instr(ctx, addu, HI(dst),
+							HI(dst), MIPS_R_AT);
 			break;
 		case BPF_ALU64 | BPF_SUB:
-			emit_instr(ctx, daddiu, dst, dst, -imm);
+			emit_instr(ctx, addiu, MIPS_R_AT, LO(dst), -imm);
+			if (imm < 0)
+				emit_instr(ctx, addiu, HI(dst), HI(dst), 1);
+			emit_instr(ctx, sltu, MIPS_R_AT, LO(dst), MIPS_R_AT);
+			/* sltu sets all bits 1 in R6 ISA i.e. == -1 */
+			if (MIPS_ISA_REV >= 6)
+				emit_instr(ctx, addu, HI(dst),
+							HI(dst), MIPS_R_AT);
+			else
+				emit_instr(ctx, subu, HI(dst),
+							HI(dst), MIPS_R_AT);
+			emit_instr(ctx, addiu, LO(dst), LO(dst), -imm);
 			break;
 		case BPF_ALU64 | BPF_ARSH:
 			shamt = imm & 0x3f;
@@ -821,10 +842,34 @@ static int gen_imm_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 								MIPS_R_AT);
 				break;
 			case BPF_ALU64 | BPF_ADD:
-				emit_instr(ctx, daddu, dst, dst, MIPS_R_AT);
+				emit_instr(ctx, addu, LO(dst),
+							LO(dst), MIPS_R_AT);
+				if (imm < 0)
+					emit_instr(ctx, addiu, HI(dst), HI(dst), -1);
+				emit_instr(ctx, sltu, MIPS_R_AT,
+							LO(dst), MIPS_R_AT);
+				/* sltu sets all bits 1 in R6 ISA i.e. == -1 */
+				if (MIPS_ISA_REV >= 6)
+					emit_instr(ctx, subu, HI(dst),
+							HI(dst), MIPS_R_AT);
+				else
+					emit_instr(ctx, addu, HI(dst),
+							HI(dst), MIPS_R_AT);
 				break;
 			case BPF_ALU64 | BPF_SUB:
-				emit_instr(ctx, dsubu, dst, dst, MIPS_R_AT);
+				emit_instr(ctx, subu, LO(dst),
+							LO(dst), MIPS_R_AT);
+				if (imm < 0)
+					emit_instr(ctx, addiu, HI(dst), HI(dst), 1);
+				emit_instr(ctx, sltu, MIPS_R_AT,
+							MIPS_R_AT, LO(dst));
+				/* sltu sets all bits 1 in R6 ISA i.e. == -1 */
+				if (MIPS_ISA_REV >= 6)
+					emit_instr(ctx, addu, HI(dst),
+							HI(dst), MIPS_R_AT);
+				else
+					emit_instr(ctx, subu, HI(dst),
+							HI(dst), MIPS_R_AT);
 				break;
 			case BPF_ALU | BPF_ADD:
 				emit_instr(ctx, addu, LO(dst), LO(dst),
@@ -985,7 +1030,6 @@ static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 	switch (insn->code) {
 	case BPF_ALU64 | BPF_ADD | BPF_K: /* ALU64_IMM */
 	case BPF_ALU64 | BPF_SUB | BPF_K: /* ALU64_IMM */
-		UNSUPPORTED;
 	case BPF_ALU64 | BPF_LSH | BPF_K: /* ALU64_IMM */
 	case BPF_ALU64 | BPF_RSH | BPF_K: /* ALU64_IMM */
 	case BPF_ALU64 | BPF_ARSH | BPF_K: /* ALU64_IMM */
