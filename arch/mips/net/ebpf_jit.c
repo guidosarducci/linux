@@ -365,6 +365,9 @@ bad_reg:
  */
 static int gen_int_prologue(struct jit_ctx *ctx)
 {
+	int tcc_reg = bpf2mips[JIT_REG_TCC].reg;
+	int tcc_sav = bpf2mips[JIT_SAV_TCC].reg;
+	int r0 = bpf2mips[BPF_REG_1].reg;
 	int stack_adjust = 0;
 	int store_offset;
 	int locals_size;
@@ -402,11 +405,28 @@ static int gen_int_prologue(struct jit_ctx *ctx)
 	ctx->stack_size = stack_adjust;
 
 	/*
-	 * First instruction initializes the tail call count (TCC).
-	 * On tail call we skip this instruction, and the TCC is
-	 * passed in $v1 from the caller.
+	 * First instruction initializes the tail call count (TCC) if
+	 * called from kernel or via BPF tail call. A BPF tail-caller
+	 * will skip this instruction and pass the TCC via register.
+	 * As a BPF2BPF subprog, we are called directly and must avoid
+	 * resetting the TCC.
 	 */
-	emit_instr(ctx, addiu, MIPS_R_V1, MIPS_R_ZERO, MAX_TAIL_CALL_CNT);
+	if (!ctx->skf->is_func)
+		emit_instr(ctx, addiu, tcc_reg, MIPS_R_ZERO, MAX_TAIL_CALL_CNT);
+
+	/*
+	 * If called from kernel under O32 ABI we must set up BPF R1 context,
+	 * since BPF R1 is an endian-order regster pair ($a0:$a1 or $a1:$a0)
+	 * while context is always passed in $a0 as 32-bit pointer. If we are
+	 * a BPF2BPF call then all registers are already correctly set up.
+	 */
+	if (!is64bit() && !ctx->skf->is_func) {
+		if (isbigend())
+			emit_instr(ctx, move, LO(r0), MIPS_R_A0);
+		/* Sanitize upper 32-bit reg */
+		emit_instr(ctx, and, HI(r0), MIPS_R_ZERO, MIPS_R_ZERO);
+	}
+
 	if (stack_adjust)
 		emit_instr_long(ctx, daddiu, addiu,
 					MIPS_R_SP, MIPS_R_SP, -stack_adjust);
@@ -466,8 +486,8 @@ static int gen_int_prologue(struct jit_ctx *ctx)
 		store_offset -= sizeof(long);
 	}
 
-	if ((ctx->flags & EBPF_SEEN_TC) && !(ctx->flags & EBPF_TCC_IN_V1))
-		emit_instr(ctx, move, MIPS_R_S4, MIPS_R_V1);
+	if ((ctx->flags & EBPF_SEEN_TC) && !(ctx->flags & EBPF_TCC_IN_REG))
+		emit_instr(ctx, move, tcc_sav, tcc_reg);
 
 	return 0;
 }
@@ -486,7 +506,7 @@ static int build_int_epilogue(struct jit_ctx *ctx, int dest_reg)
 	 * Returning to the kernel must follow the N64 or O32 ABI, and may
 	 * require fixups to register usage or mapping.
 	 */
-	if (dest_reg == MIPS_R_RA && !ctx->skf->is_func) {
+	if (dest_reg == MIPS_R_RA && !ctx->skf->is_func) { // FIXME TC R1 FIX
 		if (is64bit()) {
 			/* Don't let zero extended value escape. */
 			td = get_reg_val_type(ctx, prog->len, BPF_REG_0);
