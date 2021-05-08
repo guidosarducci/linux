@@ -382,6 +382,8 @@ bad_reg:
  */
 static int gen_int_prologue(struct jit_ctx *ctx)
 {
+	int tcc_reg = bpf2mips[JIT_REG_TCC].reg;
+	int tcc_sav = bpf2mips[JIT_SAV_TCC].reg;
 	int stack_adjust = 0;
 	int store_offset;
 	int locals_size;
@@ -424,9 +426,31 @@ static int gen_int_prologue(struct jit_ctx *ctx)
 	/*
 	 * First instruction initializes the tail call count (TCC).
 	 * On tail call we skip this instruction, and the TCC is
-	 * passed in $v1 from the caller.
+	 * passed in from the caller.
 	 */
-	emit_instr(ctx, addiu, MIPS_R_V1, MIPS_R_ZERO, MAX_TAIL_CALL_CNT);
+	emit_instr(ctx, addiu, tcc_reg, MIPS_R_ZERO, MAX_TAIL_CALL_CNT);
+
+	/*
+	 * Temporary kludge needed to set up BPF R1 from MIPS $a0 (context),
+	 * since BPF R1 is an endian-order reg pair ($a0:$a1 or $a1:$a0) but
+	 * $a0 is passed in as 32-bit pointer under O32 ABI.
+	 *
+	 * FIXME Need to skip this piece of prologue when calling BPF2BPF
+	 * functions and making BPF tail calls. Also need to understand when
+	 * we're making a BPF helper call, so we don't mistakenly skip code.
+	 */
+	if (!is64bit()) {
+		int r0 = bpf2mips[BPF_REG_1].reg;
+		int zero = MIPS_R_ZERO;
+
+		if (isbigend())
+			emit_instr(ctx, addu, LO(r0), MIPS_R_A0, zero);
+		else
+			emit_instr(ctx, nop);
+		/* Sanitize upper 32-bit reg */
+		emit_instr(ctx, and, HI(r0), zero, zero);
+	}
+
 	if (stack_adjust)
 		emit_instr_long(ctx, daddiu, addiu,
 					MIPS_R_SP, MIPS_R_SP, -stack_adjust);
@@ -486,8 +510,8 @@ static int gen_int_prologue(struct jit_ctx *ctx)
 		store_offset -= sizeof(long);
 	}
 
-	if ((ctx->flags & EBPF_SEEN_TC) && !(ctx->flags & EBPF_TCC_IN_V1))
-		emit_instr(ctx, move, MIPS_R_S4, MIPS_R_V1);
+	if ((ctx->flags & EBPF_SEEN_TC) && !(ctx->flags & EBPF_TCC_IN_REG))
+		emit_instr(ctx, move, tcc_sav, tcc_reg);
 
 	return 0;
 }
