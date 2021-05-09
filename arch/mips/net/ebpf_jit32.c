@@ -1223,15 +1223,15 @@ static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 			gen_zext_insn(dst, true, ctx);
 		}
 		break;
-	case BPF_ALU64 | BPF_MUL | BPF_X: /* ALU64_REG */
 	case BPF_ALU64 | BPF_DIV | BPF_X: /* ALU64_REG */
 	case BPF_ALU64 | BPF_MOD | BPF_X: /* ALU64_REG */
-	case BPF_ALU64 | BPF_ADD | BPF_X: /* ALU64_REG */
-	case BPF_ALU64 | BPF_SUB | BPF_X: /* ALU64_REG */
 	case BPF_ALU64 | BPF_LSH | BPF_X: /* ALU64_REG */
 	case BPF_ALU64 | BPF_RSH | BPF_X: /* ALU64_REG */
 	case BPF_ALU64 | BPF_ARSH | BPF_X: /* ALU64_REG */
 		UNSUPPORTED;
+	case BPF_ALU64 | BPF_MUL | BPF_X: /* ALU64_REG */
+	case BPF_ALU64 | BPF_ADD | BPF_X: /* ALU64_REG */
+	case BPF_ALU64 | BPF_SUB | BPF_X: /* ALU64_REG */
 	case BPF_ALU64 | BPF_MOV | BPF_X: /* ALU64_REG */
 	case BPF_ALU64 | BPF_XOR | BPF_X: /* ALU64_REG */
 	case BPF_ALU64 | BPF_OR | BPF_X: /* ALU64_REG */
@@ -1262,10 +1262,30 @@ static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 			}
 			break;
 		case BPF_ADD:
-			emit_instr(ctx, daddu, dst, dst, src);
+			emit_instr(ctx, addu, HI(dst), HI(dst), HI(src));
+			emit_instr(ctx, addu, MIPS_R_AT, LO(dst), LO(src));
+			emit_instr(ctx, sltu, MIPS_R_AT, MIPS_R_AT, LO(dst));
+			/* sltu sets all bits 1 in R6 ISA i.e. == -1 */
+			if (MIPS_ISA_REV >= 6)
+				emit_instr(ctx, subu, HI(dst),
+							HI(dst), MIPS_R_AT);
+			else
+				emit_instr(ctx, addu, HI(dst),
+							HI(dst), MIPS_R_AT);
+			emit_instr(ctx, addu, LO(dst), LO(dst), LO(src));
 			break;
 		case BPF_SUB:
-			emit_instr(ctx, dsubu, dst, dst, src);
+			emit_instr(ctx, subu, HI(dst), HI(dst), HI(src));
+			emit_instr(ctx, subu, MIPS_R_AT, LO(dst), LO(src));
+			emit_instr(ctx, sltu, MIPS_R_AT, LO(dst), MIPS_R_AT);
+			/* sltu sets all bits 1 in R6 ISA i.e. == -1 */
+			if (MIPS_ISA_REV >= 6)
+				emit_instr(ctx, addu, HI(dst),
+							HI(dst), MIPS_R_AT);
+			else
+				emit_instr(ctx, subu, HI(dst),
+							HI(dst), MIPS_R_AT);
+			emit_instr(ctx, subu, LO(dst), LO(dst), LO(src));
 			break;
 		case BPF_XOR:
 			emit_instr(ctx, xor, LO(dst), LO(dst), LO(src));
@@ -1280,12 +1300,18 @@ static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 			emit_instr(ctx, and, HI(dst), HI(dst), HI(src));
 			break;
 		case BPF_MUL:
+			emit_instr(ctx, mul, HI(dst), HI(dst), LO(src));
+			emit_instr(ctx, mul, MIPS_R_AT, LO(dst), HI(src));
+			emit_instr(ctx, addu, HI(dst), HI(dst), MIPS_R_AT);
 			if (MIPS_ISA_REV >= 6) {
-				emit_instr(ctx, dmulu, dst, dst, src);
+				emit_instr(ctx, mulu, LO(dst), LO(dst), LO(src));
+				emit_instr(ctx, muhu, MIPS_R_AT, LO(dst), LO(src));
 			} else {
-				emit_instr(ctx, dmultu, dst, src);
-				emit_instr(ctx, mflo, dst);
+				emit_instr(ctx, multu, LO(dst), LO(src));
+				emit_instr(ctx, mfhi, MIPS_R_AT);
+				emit_instr(ctx, mflo, LO(dst));
 			}
+			emit_instr(ctx, addu, HI(dst), HI(dst), MIPS_R_AT);
 			break;
 		case BPF_DIV:
 		case BPF_MOD:
