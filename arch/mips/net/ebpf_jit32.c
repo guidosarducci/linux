@@ -1225,9 +1225,6 @@ static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 		break;
 	case BPF_ALU64 | BPF_DIV | BPF_X: /* ALU64_REG */
 	case BPF_ALU64 | BPF_MOD | BPF_X: /* ALU64_REG */
-	case BPF_ALU64 | BPF_LSH | BPF_X: /* ALU64_REG */
-	case BPF_ALU64 | BPF_RSH | BPF_X: /* ALU64_REG */
-	case BPF_ALU64 | BPF_ARSH | BPF_X: /* ALU64_REG */
 		UNSUPPORTED;
 	case BPF_ALU64 | BPF_MUL | BPF_X: /* ALU64_REG */
 	case BPF_ALU64 | BPF_ADD | BPF_X: /* ALU64_REG */
@@ -1236,6 +1233,9 @@ static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 	case BPF_ALU64 | BPF_XOR | BPF_X: /* ALU64_REG */
 	case BPF_ALU64 | BPF_OR | BPF_X: /* ALU64_REG */
 	case BPF_ALU64 | BPF_AND | BPF_X: /* ALU64_REG */
+	case BPF_ALU64 | BPF_LSH | BPF_X: /* ALU64_REG */
+	case BPF_ALU64 | BPF_RSH | BPF_X: /* ALU64_REG */
+	case BPF_ALU64 | BPF_ARSH | BPF_X: /* ALU64_REG */
 		src = ebpf_to_mips_reg(ctx, insn, REG_SRC_FP_OK);
 		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
 		if (src < 0 || dst < 0)
@@ -1330,13 +1330,46 @@ static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 				emit_instr(ctx, mfhi, dst);
 			break;
 		case BPF_LSH:
-			emit_instr(ctx, dsllv, dst, dst, src);
+			emit_instr(ctx, beqz, LO(src), 11 * 4);
+			emit_instr(ctx, addiu, MIPS_R_AT, LO(src), -32);
+			emit_instr(ctx, bltz, MIPS_R_AT, 4 * 4);
+			emit_instr(ctx, nop);
+			emit_instr(ctx, sllv, HI(dst), LO(dst), MIPS_R_AT);
+			emit_instr(ctx, and, LO(dst), LO(dst), MIPS_R_ZERO);
+			emit_instr(ctx, b, 5 * 4);
+			emit_instr(ctx, subu, MIPS_R_AT, MIPS_R_ZERO, MIPS_R_AT);
+			emit_instr(ctx, srlv, MIPS_R_AT, LO(dst), MIPS_R_AT);
+			emit_instr(ctx, sllv, HI(dst), HI(dst), LO(src));
+			emit_instr(ctx, sllv, LO(dst), LO(dst), LO(src));
+			emit_instr(ctx, or, HI(dst), HI(dst), MIPS_R_AT);
 			break;
 		case BPF_RSH:
-			emit_instr(ctx, dsrlv, dst, dst, src);
+			emit_instr(ctx, beqz, LO(src), 11 * 4);
+			emit_instr(ctx, addiu, MIPS_R_AT, LO(src), -32);
+			emit_instr(ctx, bltz, MIPS_R_AT, 4 * 4);
+			emit_instr(ctx, nop);
+			emit_instr(ctx, srlv, LO(dst), HI(dst), MIPS_R_AT);
+			emit_instr(ctx, and, HI(dst), HI(dst), MIPS_R_ZERO);
+			emit_instr(ctx, b, 5 * 4);
+			emit_instr(ctx, subu, MIPS_R_AT, MIPS_R_ZERO, MIPS_R_AT);
+			emit_instr(ctx, sllv, MIPS_R_AT, HI(dst), MIPS_R_AT);
+			emit_instr(ctx, srlv, HI(dst), HI(dst), LO(src));
+			emit_instr(ctx, srlv, LO(dst), LO(dst), LO(src));
+			emit_instr(ctx, or, LO(dst), LO(dst), MIPS_R_AT);
 			break;
 		case BPF_ARSH:
-			emit_instr(ctx, dsrav, dst, dst, src);
+			emit_instr(ctx, beqz, LO(src), 11 * 4);
+			emit_instr(ctx, addiu, MIPS_R_AT, LO(src), -32);
+			emit_instr(ctx, bltz, MIPS_R_AT, 4 * 4);
+			emit_instr(ctx, nop);
+			emit_instr(ctx, srav, LO(dst), HI(dst), MIPS_R_AT);
+			emit_instr(ctx, sra, HI(dst), HI(dst), 31);
+			emit_instr(ctx, b, 5 * 4);
+			emit_instr(ctx, subu, MIPS_R_AT, MIPS_R_ZERO, MIPS_R_AT);
+			emit_instr(ctx, sllv, MIPS_R_AT, HI(dst), MIPS_R_AT);
+			emit_instr(ctx, srav, HI(dst), HI(dst), LO(src));
+			emit_instr(ctx, srlv, LO(dst), LO(dst), LO(src));
+			emit_instr(ctx, or, LO(dst), LO(dst), MIPS_R_AT);
 			break;
 		default:
 			pr_err("ALU64_REG NOT HANDLED\n");
