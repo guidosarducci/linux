@@ -1472,20 +1472,6 @@ static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 			emit_instr(ctx, nop);
 		}
 		break;
-	case BPF_JMP | BPF_JEQ | BPF_K: /* JMP_IMM */
-	case BPF_JMP | BPF_JNE | BPF_K: /* JMP_IMM */
-		UNSUPPORTED;
-		cmp_eq = (bpf_op == BPF_JEQ);
-		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_FP_OK);
-		if (dst < 0)
-			return dst;
-		if (insn->imm == 0) {
-			src = MIPS_R_ZERO;
-		} else {
-			gen_imm_to_reg(insn, MIPS_R_AT, ctx);
-			src = MIPS_R_AT;
-		}
-		goto jeq_common;
 	case BPF_JMP32 | BPF_JSLT | BPF_X:
 	case BPF_JMP32 | BPF_JSLE | BPF_X:
 	case BPF_JMP32 | BPF_JSGT | BPF_X:
@@ -1731,13 +1717,34 @@ jeq_common:
 	case BPF_JMP | BPF_JSGE | BPF_K: /* JMP_IMM */
 	case BPF_JMP | BPF_JSLT | BPF_K: /* JMP_IMM */
 	case BPF_JMP | BPF_JSLE | BPF_K: /* JMP_IMM */
-		UNSUPPORTED;
+	case BPF_JMP32 | BPF_JSGT | BPF_K: /* JMP_IMM */
+	case BPF_JMP32 | BPF_JSGE | BPF_K: /* JMP_IMM */
+	case BPF_JMP32 | BPF_JSLT | BPF_K: /* JMP_IMM */
+	case BPF_JMP32 | BPF_JSLE | BPF_K: /* JMP_IMM */
 		cmp_eq = (bpf_op == BPF_JSGE);
-		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_FP_OK);
+		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
 		if (dst < 0)
 			return dst;
 
 		if (insn->imm == 0) {
+			if (bpf_class == BPF_JMP32) {
+				dst = LO(dst);
+			} else { /* BPF_JMP */
+				if (MIPS_ISA_REV >= 6) {
+					emit_instr(ctx, bnez, HI(dst), 3 * 4);
+					emit_instr(ctx, move, MIPS_R_AT, HI(dst));
+					emit_instr(ctx, sltu, MIPS_R_AT,
+							MIPS_R_ZERO, LO(dst));
+					emit_instr(ctx, srl, MIPS_R_AT,
+								MIPS_R_AT, 1);
+				} else {
+					emit_instr(ctx, bnez, HI(dst), 2 * 4);
+					emit_instr(ctx, move, MIPS_R_AT, HI(dst));
+					emit_instr(ctx, sltu, MIPS_R_AT,
+							MIPS_R_ZERO, LO(dst));
+				}
+				dst = MIPS_R_AT;
+			}
 			if ((insn + 1)->code == (BPF_JMP | BPF_EXIT) && insn->off == 1) {
 				b_off = b_imm(exit_idx, ctx);
 				if (is_bad_offset(b_off))
@@ -1783,7 +1790,7 @@ jeq_common:
 		 * only "LT" compare available, so we must use imm + 1
 		 * to generate "GT" and imm -1 to generate LE
 		 */
-		if (bpf_op == BPF_JSGT)
+		if (bpf_op == BPF_JSGT) /* FIXME drop +1, verify imm != 0 */
 			t64s = insn->imm + 1;
 		else if (bpf_op == BPF_JSLE)
 			t64s = insn->imm + 1;
@@ -1791,14 +1798,41 @@ jeq_common:
 			t64s = insn->imm;
 
 		cmp_eq = bpf_op == BPF_JSGT || bpf_op == BPF_JSGE;
+
+
 		if (t64s >= S16_MIN && t64s <= S16_MAX) {
-			emit_instr(ctx, slti, MIPS_R_AT, dst, (int)t64s);
-			src = MIPS_R_AT;
-			dst = MIPS_R_ZERO;
-			goto jeq_common;
+			emit_instr(ctx, addiu, MIPS_R_T8, LO(dst), -t64s);
+		} else {
+			emit_const_to_reg(ctx, MIPS_R_T8, (u64)t64s);
+			emit_instr(ctx, subu, MIPS_R_T8, LO(dst), MIPS_R_T8);
 		}
-		emit_const_to_reg(ctx, MIPS_R_AT, (u64)t64s);
-		emit_instr(ctx, slt, MIPS_R_AT, dst, MIPS_R_AT);
+		emit_instr(ctx, sltu, MIPS_R_AT, LO(dst), MIPS_R_T8);
+		/* sltu sets all bits 1 in R6 ISA i.e. == -1 */
+		if (MIPS_ISA_REV >= 6)
+			emit_instr(ctx, addu, MIPS_R_AT,
+						HI(dst), MIPS_R_AT);
+		else
+			emit_instr(ctx, subu, MIPS_R_AT,
+						HI(dst), MIPS_R_AT);
+		if (t64s < 0)
+			emit_instr(ctx, addiu, MIPS_R_AT, MIPS_R_AT, 1);
+
+		if (MIPS_ISA_REV >= 6) {
+			emit_instr(ctx, bne, MIPS_R_AT, MIPS_R_ZERO, 8);
+			emit_instr(ctx, nop);
+			emit_instr(ctx, move, MIPS_R_AT, MIPS_R_T8);
+		} else {
+			emit_instr(ctx, movz, MIPS_R_AT, MIPS_R_T8, MIPS_R_AT);
+		}
+
+//		if (t64s >= S16_MIN && t64s <= S16_MAX) {
+//			emit_instr(ctx, slti, MIPS_R_AT, dst, (int)t64s);
+//			src = MIPS_R_AT;
+//			dst = MIPS_R_ZERO;
+//			goto jeq_common;
+//		}
+//		emit_const_to_reg(ctx, MIPS_R_AT, (u64)t64s);
+		emit_instr(ctx, slt, MIPS_R_AT, MIPS_R_AT, MIPS_R_ZERO);
 		src = MIPS_R_AT;
 		dst = MIPS_R_ZERO;
 		goto jeq_common;
@@ -1807,55 +1841,87 @@ jeq_common:
 	case BPF_JMP | BPF_JGE | BPF_K:
 	case BPF_JMP | BPF_JLT | BPF_K:
 	case BPF_JMP | BPF_JLE | BPF_K:
-		UNSUPPORTED;
-		cmp_eq = (bpf_op == BPF_JGE);
-		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_FP_OK);
+	case BPF_JMP32 | BPF_JGT | BPF_K:
+	case BPF_JMP32 | BPF_JGE | BPF_K:
+	case BPF_JMP32 | BPF_JLT | BPF_K:
+	case BPF_JMP32 | BPF_JLE | BPF_K:
+		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
 		if (dst < 0)
 			return dst;
-		/*
-		 * only "LT" compare available, so we must use imm + 1
-		 * to generate "GT" and imm -1 to generate LE
-		 */
-		if (bpf_op == BPF_JGT)
-			t64s = (u64)(u32)(insn->imm) + 1;
-		else if (bpf_op == BPF_JLE)
-			t64s = (u64)(u32)(insn->imm) + 1;
-		else
-			t64s = (u64)(u32)(insn->imm);
 
 		cmp_eq = bpf_op == BPF_JGT || bpf_op == BPF_JGE;
+		gen_imm_to_reg(insn, MIPS_R_AT, ctx);
+		/* Set T9 on low words equal, if needed */
+		if (bpf_op == BPF_JGT || bpf_op == BPF_JLE) {
+			emit_instr(ctx, bne, LO(dst), MIPS_R_AT, 2 * 4);
+			emit_instr(ctx, move, MIPS_R_T9, MIPS_R_ZERO);
+			emit_instr(ctx, move, MIPS_R_T9, MIPS_R_SP);
+		}
+		/* Set T8 if dst < K */
+		if (bpf_class == BPF_JMP) {
+			t64s = bpf_op == BPF_JGT || bpf_op == BPF_JLE ? 12 : 8;
+			emit_instr(ctx, bnez, HI(dst), t64s);
+			emit_instr(ctx, move, MIPS_R_T8, MIPS_R_ZERO);
+		}
+		emit_instr(ctx, sltu, MIPS_R_T8, LO(dst), MIPS_R_AT);
+		/* Set T8 as dst <= K, if needed */
+		if (bpf_op == BPF_JGT || bpf_op == BPF_JLE)
+			emit_instr(ctx, or, MIPS_R_T8, MIPS_R_T8, MIPS_R_T9);
 
-		emit_const_to_reg(ctx, MIPS_R_AT, (u64)t64s);
-		emit_instr(ctx, sltu, MIPS_R_AT, dst, MIPS_R_AT);
-		src = MIPS_R_AT;
+		src = MIPS_R_T8;
 		dst = MIPS_R_ZERO;
 		goto jeq_common;
 
-	case BPF_JMP | BPF_JSET | BPF_K: /* JMP_IMM */
-		UNSUPPORTED;
+	case BPF_JMP | BPF_JEQ | BPF_K: /* JMP_IMM */
+	case BPF_JMP | BPF_JNE | BPF_K: /* JMP_IMM */
+	case BPF_JMP32 | BPF_JEQ | BPF_K: /* JMP_IMM */
+	case BPF_JMP32 | BPF_JNE | BPF_K: /* JMP_IMM */
+		cmp_eq = (bpf_op == BPF_JEQ);
 		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_FP_OK);
 		if (dst < 0)
 			return dst;
-
-		if (ctx->use_bbit_insns && hweight32((u32)insn->imm) == 1) {
-			if ((insn + 1)->code == (BPF_JMP | BPF_EXIT) && insn->off == 1) {
-				b_off = b_imm(exit_idx, ctx);
-				if (is_bad_offset(b_off))
-					return -E2BIG;
-				emit_instr(ctx, bbit0, dst, ffs((u32)insn->imm) - 1, b_off);
-				emit_instr(ctx, nop);
-				return 2; /* We consumed the exit. */
-			}
-			b_off = b_imm(this_idx + insn->off + 1, ctx);
-			if (is_bad_offset(b_off))
-				return -E2BIG;
-			emit_instr(ctx, bbit1, dst, ffs((u32)insn->imm) - 1, b_off);
-			emit_instr(ctx, nop);
-			break;
+		if (insn->dst_reg == BPF_REG_10) {
+			dst = MIPS_R_T8;
+			emit_instr(ctx, addiu, LO(dst),
+						MIPS_R_SP, ctx->bpf_stack_off);
+			emit_instr(ctx, move, HI(dst), MIPS_R_ZERO);
 		}
+		if (insn->imm == 0) {
+			src = MIPS_R_ZERO;
+			if (bpf_class == BPF_JMP32) {
+				dst = LO(dst);
+			} else { /* BPF_JMP */
+				emit_instr(ctx, or, MIPS_R_AT, LO(dst), HI(dst));
+				dst = MIPS_R_AT;
+			}
+		} else if (bpf_class == BPF_JMP32) {
+			gen_imm_to_reg(insn, MIPS_R_AT, ctx);
+			src = MIPS_R_AT;
+			dst = LO(dst);
+		} else { /* BPF_JMP */
+			gen_imm_to_reg(insn, MIPS_R_AT, ctx);
+			/* If low words equal, check high word vs imm sign. */
+			emit_instr(ctx, beq, LO(dst), MIPS_R_AT, 2 * 4);
+			emit_instr(ctx, nop);
+			/* Make high word signs unequal if low words unequal. */
+			emit_instr(ctx, nor, MIPS_R_AT, MIPS_R_ZERO, HI(dst));
+			emit_instr(ctx, sra, MIPS_R_AT, MIPS_R_AT, 31);
+			src = MIPS_R_AT;
+			dst = HI(dst);
+		}
+		goto jeq_common;
+
+	case BPF_JMP | BPF_JSET | BPF_K: /* JMP_IMM */
+	case BPF_JMP32 | BPF_JSET | BPF_K: /* JMP_IMM */
+		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
+		if (dst < 0)
+			return dst;
+
 		t64u = (u32)insn->imm;
-		emit_const_to_reg(ctx, MIPS_R_AT, t64u);
-		emit_instr(ctx, and, MIPS_R_AT, dst, MIPS_R_AT);
+		gen_imm_to_reg(insn, MIPS_R_AT, ctx);
+		emit_instr(ctx, and, MIPS_R_AT, LO(dst), MIPS_R_AT);
+		if (bpf_class == BPF_JMP && insn->imm < 0)
+			emit_instr(ctx, or, MIPS_R_AT, MIPS_R_AT, HI(dst));
 		src = MIPS_R_AT;
 		dst = MIPS_R_ZERO;
 		cmp_eq = false;
