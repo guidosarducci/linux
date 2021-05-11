@@ -915,12 +915,14 @@ static bool is_bad_offset(int b_off)
 static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 			  int this_idx, int exit_idx)
 {
-	int src, dst, r, td, ts, mem_off, b_off;
+	const int bpf_class = BPF_CLASS(insn->code);
+	const int bpf_size = BPF_SIZE(insn->code);
+	const int bpf_op = BPF_OP(insn->code);
+	int src, dst, tmp, r, mem_off, b_off;
 	bool need_swap, did_move, cmp_eq;
 	unsigned int target = 0;
-	u64 t64;
+	u64 t64u;
 	s64 t64s;
-	int bpf_op = BPF_OP(insn->code);
 
 	/* No support in 32-bit JIT for 64-bit ALU or load/stores */
 	if (IS_ENABLED(CONFIG_32BIT) &&
@@ -1535,8 +1537,8 @@ jeq_common:
 			emit_instr(ctx, nop);
 			break;
 		}
-		t64 = (u32)insn->imm;
-		emit_const_to_reg(ctx, MIPS_R_AT, t64);
+		t64u = (u32)insn->imm;
+		emit_const_to_reg(ctx, MIPS_R_AT, t64u);
 		emit_instr(ctx, and, MIPS_R_AT, dst, MIPS_R_AT);
 		src = MIPS_R_AT;
 		dst = MIPS_R_ZERO;
