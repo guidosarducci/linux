@@ -415,7 +415,9 @@ static void gen_imm_to_reg(const struct bpf_insn *insn, int reg,
 		int upper = insn->imm - lower;
 
 		emit_instr(ctx, lui, reg, upper >> 16);
-		emit_instr(ctx, addiu, reg, reg, lower);
+		/* lui already clears lower halfword */
+		if (lower)
+			emit_instr(ctx, addiu, reg, reg, lower);
 	}
 }
 
