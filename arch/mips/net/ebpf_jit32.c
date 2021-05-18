@@ -1260,7 +1260,7 @@ static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 			b_off = b_imm(exit_idx, ctx);
 			if (is_bad_offset(b_off))
 				return -E2BIG;
-			emit_instr(ctx, beq, MIPS_R_ZERO, MIPS_R_ZERO, b_off);
+			emit_instr(ctx, b, b_off);
 			emit_instr(ctx, nop);
 		}
 		break;
