@@ -675,6 +675,7 @@ static int gen_imm_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 		lower_bound = S32_MIN;
 		break;
 	default:
+		pr_err("JIT ERR: gen_imm_insn 1\n");
 		return -EINVAL;
 	}
 
@@ -804,6 +805,7 @@ static int gen_imm_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 			emit_instr(ctx, addiu, LO(dst), LO(dst), -imm);
 			break;
 		default:
+			pr_err("JIT ERR: gen_imm_insn 2\n");
 			return -EINVAL;
 		}
 	} else {
@@ -880,6 +882,7 @@ static int gen_imm_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 								MIPS_R_AT);
 				break;
 			default:
+				pr_err("JIT ERR: gen_imm_insn 3\n");
 				return -EINVAL;
 			}
 		}
@@ -1472,8 +1475,10 @@ static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 			b_off = b_imm(exit_idx, ctx);
 			if (is_bad_offset(b_off)) { /* TODO: also MIPS64*/
 				target = j_target(ctx, exit_idx);
-				if (target == (unsigned int)-1)
+				if (target == (unsigned int)-1) {
+					pr_err("JIT ERR: BPF_JMP|BPF_EXIT\n");
 					return -E2BIG;
+				}
 				emit_instr(ctx, j, target);
 			} else {
 				emit_instr(ctx, b, b_off);
@@ -1678,8 +1683,10 @@ jeq_common:
 			b_off = b_imm(exit_idx, ctx);
 			if (is_bad_offset(b_off)) {
 				target = j_target(ctx, exit_idx);
-				if (target == (unsigned int)-1)
+				if (target == (unsigned int)-1) {
+					pr_err("JIT ERR: jeq_common, j_target 1\n");
 					return -E2BIG;
+				}
 				cmp_eq = !cmp_eq;
 				b_off = 4 * 3;
 				if (!(ctx->offsets[this_idx] & OFFSETS_B_CONV)) {
@@ -1702,8 +1709,10 @@ jeq_common:
 		b_off = b_imm(this_idx + insn->off + 1, ctx);
 		if (is_bad_offset(b_off)) {
 			target = j_target(ctx, this_idx + insn->off + 1);
-			if (target == (unsigned int)-1)
+			if (target == (unsigned int)-1) {
+				pr_err("JIT ERR: jeq_common, j_target 2\n");
 				return -E2BIG;
+			}
 			cmp_eq = !cmp_eq;
 			b_off = 4 * 3;
 			if (!(ctx->offsets[this_idx] & OFFSETS_B_CONV)) {
@@ -1756,8 +1765,10 @@ jeq_common:
 			}
 			if ((insn + 1)->code == (BPF_JMP | BPF_EXIT) && insn->off == 1) {
 				b_off = b_imm(exit_idx, ctx);
-				if (is_bad_offset(b_off))
+				if (is_bad_offset(b_off)) {
+					pr_err("JIT ERR: BPF_JMP | BPF_JSLE | BPF_K 1\n");
 					return -E2BIG;
+				}
 				switch (bpf_op) {
 				case BPF_JSGT:
 					emit_instr(ctx, blez, dst, b_off);
@@ -1776,8 +1787,10 @@ jeq_common:
 				return 2; /* We consumed the exit. */
 			}
 			b_off = b_imm(this_idx + insn->off + 1, ctx);
-			if (is_bad_offset(b_off))
+			if (is_bad_offset(b_off)) {
+				pr_err("JIT ERR: BPF_JMP | BPF_JSLE | BPF_K 2\n");
 				return -E2BIG;
+			}
 			switch (bpf_op) {
 			case BPF_JSGT:
 				emit_instr(ctx, bgtz, dst, b_off);
@@ -1944,8 +1957,10 @@ jeq_common:
 		b_off = b_imm(this_idx + insn->off + 1, ctx);
 		if (is_bad_offset(b_off)) {
 			target = j_target(ctx, this_idx + insn->off + 1);
-			if (target == (unsigned int)-1)
+			if (target == (unsigned int)-1) {
+				pr_err("JIT ERR: BPF_JMP | BPF_JA\n");
 				return -E2BIG;
+			}
 			emit_instr(ctx, j, target);
 		} else {
 			emit_instr(ctx, b, b_off);
@@ -1972,8 +1987,10 @@ jeq_common:
 		break;
 
 	case BPF_JMP | BPF_TAIL_CALL:
-		if (emit_bpf_tail_call(ctx, this_idx))
+		if (emit_bpf_tail_call(ctx, this_idx)) {
+			pr_err("JIT ERR: BPF_JMP | BPF_TAIL_CALL\n");
 			return -EINVAL;
+		}
 		break;
 
 	case BPF_ALU | BPF_END | BPF_FROM_BE:
@@ -2196,8 +2213,10 @@ static int build_int_body(struct jit_ctx *ctx)
 			ctx->offsets[i] = (ctx->offsets[i] & OFFSETS_B_CONV) | (ctx->idx * 4);
 
 		r = build_one_insn(insn, ctx, i, prog->len);
-		if (r < 0)
+		if (r < 0) {
+			pr_err("JIT ERR: build_int_body\n");
 			return r;
+		}
 		i += r;
 	}
 	/* epilogue offset */
@@ -2401,6 +2420,8 @@ static int reg_val_propagate_range(struct jit_ctx *ctx, u64 initial_rvt,
 			default:
 				WARN(1, "Unhandled BPF_JMP case.\n");
 				rvt[idx] |= RVT_DONE;
+				pr_err("NOT HANDLED %d - (%02x)\n",
+				       idx, (unsigned int)insn->code);
 				break;
 			}
 			break;
