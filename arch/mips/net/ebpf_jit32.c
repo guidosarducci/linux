@@ -429,6 +429,8 @@ static int gen_int_prologue(struct jit_ctx *ctx)
 	 * passed in from the caller.
 	 */
 	emit_instr(ctx, addiu, tcc_reg, MIPS_R_ZERO, MAX_TAIL_CALL_CNT);
+	if (bpf_jit_enable > 2)
+		emit_instr(ctx, break, 0);
 
 	/*
 	 * Temporary kludge needed to set up BPF R1 from MIPS $a0 (context),
@@ -675,6 +677,7 @@ static int gen_imm_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 		lower_bound = S32_MIN;
 		break;
 	default:
+		pr_err("JIT ERR: gen_imm_insn 1\n");
 		return -EINVAL;
 	}
 
@@ -804,6 +807,7 @@ static int gen_imm_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 			emit_instr(ctx, addiu, LO(dst), LO(dst), -imm);
 			break;
 		default:
+			pr_err("JIT ERR: gen_imm_insn 2\n");
 			return -EINVAL;
 		}
 	} else {
@@ -880,6 +884,7 @@ static int gen_imm_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 								MIPS_R_AT);
 				break;
 			default:
+				pr_err("JIT ERR: gen_imm_insn 3\n");
 				return -EINVAL;
 			}
 		}
@@ -1468,8 +1473,10 @@ static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 			b_off = b_imm(exit_idx, ctx);
 			if (is_bad_offset(b_off)) {
 				target = j_target(ctx, exit_idx);
-				if (target == (unsigned int)-1)
+				if (target == (unsigned int)-1) {
+					pr_err("JIT ERR: BPF_JMP|BPF_EXIT\n");
 					return -E2BIG;
+				}
 				emit_instr(ctx, j, target);
 			} else {
 				emit_instr(ctx, b, b_off);
@@ -1674,8 +1681,10 @@ jeq_common:
 			b_off = b_imm(exit_idx, ctx);
 			if (is_bad_offset(b_off)) {
 				target = j_target(ctx, exit_idx);
-				if (target == (unsigned int)-1)
+				if (target == (unsigned int)-1) {
+					pr_err("JIT ERR: jeq_common, j_target 1\n");
 					return -E2BIG;
+				}
 				cmp_eq = !cmp_eq;
 				b_off = 4 * 3;
 				if (!(ctx->offsets[this_idx] & OFFSETS_B_CONV)) {
@@ -1698,8 +1707,10 @@ jeq_common:
 		b_off = b_imm(this_idx + insn->off + 1, ctx);
 		if (is_bad_offset(b_off)) {
 			target = j_target(ctx, this_idx + insn->off + 1);
-			if (target == (unsigned int)-1)
+			if (target == (unsigned int)-1) {
+				pr_err("JIT ERR: jeq_common, j_target 2\n");
 				return -E2BIG;
+			}
 			cmp_eq = !cmp_eq;
 			b_off = 4 * 3;
 			if (!(ctx->offsets[this_idx] & OFFSETS_B_CONV)) {
@@ -1752,8 +1763,10 @@ jeq_common:
 			}
 			if ((insn + 1)->code == (BPF_JMP | BPF_EXIT) && insn->off == 1) {
 				b_off = b_imm(exit_idx, ctx);
-				if (is_bad_offset(b_off))
+				if (is_bad_offset(b_off)) {
+					pr_err("JIT ERR: BPF_JMP | BPF_JSLE | BPF_K 1\n");
 					return -E2BIG;
+				}
 				switch (bpf_op) {
 				case BPF_JSGT:
 					emit_instr(ctx, blez, dst, b_off);
@@ -1772,8 +1785,10 @@ jeq_common:
 				return 2; /* We consumed the exit. */
 			}
 			b_off = b_imm(this_idx + insn->off + 1, ctx);
-			if (is_bad_offset(b_off))
+			if (is_bad_offset(b_off)) {
+				pr_err("JIT ERR: BPF_JMP | BPF_JSLE | BPF_K 2\n");
 				return -E2BIG;
+			}
 			switch (bpf_op) {
 			case BPF_JSGT:
 				emit_instr(ctx, bgtz, dst, b_off);
@@ -1940,8 +1955,10 @@ jeq_common:
 		b_off = b_imm(this_idx + insn->off + 1, ctx);
 		if (is_bad_offset(b_off)) {
 			target = j_target(ctx, this_idx + insn->off + 1);
-			if (target == (unsigned int)-1)
+			if (target == (unsigned int)-1) {
+				pr_err("JIT ERR: BPF_JMP | BPF_JA\n");
 				return -E2BIG;
+			}
 			emit_instr(ctx, j, target);
 		} else {
 			emit_instr(ctx, b, b_off);
@@ -1968,8 +1985,10 @@ jeq_common:
 		break;
 
 	case BPF_JMP | BPF_TAIL_CALL:
-		if (emit_bpf_tail_call(ctx, this_idx))
+		if (emit_bpf_tail_call(ctx, this_idx)) {
+			pr_err("JIT ERR: BPF_JMP | BPF_TAIL_CALL\n");
 			return -EINVAL;
+		}
 		break;
 
 	case BPF_ALU | BPF_END | BPF_FROM_BE:
@@ -2196,8 +2215,10 @@ static int build_int_body(struct jit_ctx *ctx)
 			ctx->offsets[i] = (ctx->offsets[i] & OFFSETS_B_CONV) | (ctx->idx * 4);
 
 		r = build_one_insn(insn, ctx, i, prog->len);
-		if (r < 0)
+		if (r < 0) {
+			pr_err("JIT ERR: build_int_body\n");
 			return r;
+		}
 		i += r;
 	}
 	/* epilogue offset */
@@ -2229,9 +2250,20 @@ static int reg_val_propagate_range(struct jit_ctx *ctx, u64 initial_rvt,
 	int idx;
 	int reg;
 
+	if (bpf_jit_enable > 1) {
+		pr_info("JIT INFO: reg_val_propagate_range: 1\n");
+		for (idx = start_idx; idx < prog->len; idx++) {
+			insn = prog->insnsi + idx;
+			pr_info("reg_val_propagate_range: idx (%d of %d) code (%02x) imm %d off %d\n",
+				idx, prog->len, (unsigned int)insn->code, insn->imm, insn->off);
+		}
+	}
 	for (idx = start_idx; idx < prog->len; idx++) {
 		rvt[idx] = (rvt[idx] & RVT_VISITED_MASK) | exit_rvt;
 		insn = prog->insnsi + idx;
+		if (bpf_jit_enable > 1)
+			pr_info("reg_val_propagate_range: idx (%d of %d) code (%02x) imm %d off %d\n",
+			idx, prog->len, (unsigned int)insn->code, insn->imm, insn->off);
 		switch (BPF_CLASS(insn->code)) {
 		case BPF_ALU:
 			switch (BPF_OP(insn->code)) {
@@ -2401,6 +2433,8 @@ static int reg_val_propagate_range(struct jit_ctx *ctx, u64 initial_rvt,
 			default:
 				WARN(1, "Unhandled BPF_JMP case.\n");
 				rvt[idx] |= RVT_DONE;
+				pr_err("NOT HANDLED %d - (%02x)\n",
+				       idx, (unsigned int)insn->code);
 				break;
 			}
 			break;
@@ -2427,6 +2461,8 @@ static int reg_val_propagate(struct jit_ctx *ctx)
 	int reg;
 	int i;
 
+	if (bpf_jit_enable > 1)
+		pr_info("JIT INFO: reg_val_propagate: 1\n");
 	/*
 	 * 11 registers * 3 bits/reg leaves top bits free for other
 	 * uses.  Bit-62..63 used to see if we have visited an insn.
@@ -2443,6 +2479,8 @@ static int reg_val_propagate(struct jit_ctx *ctx)
 	 */
 	reg_val_propagate_range(ctx, exit_rvt, 0, false);
 restart_search:
+	if (bpf_jit_enable > 1)
+		pr_info("JIT INFO: reg_val_propagate: 2\n");
 	/*
 	 * Then repeatedly find the first conditional branch where
 	 * both edges of control flow have not been taken, and follow
@@ -2497,6 +2535,8 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 	unsigned int image_size;
 	u8 *image_ptr;
 
+	if (bpf_jit_enable > 1)
+		pr_info("JIT INFO: bpf_int_jit_compile: 1\n");
 	if (!prog->jit_requested)
 		return prog;
 
@@ -2526,6 +2566,8 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 	}
 	preempt_enable();
 
+	if (bpf_jit_enable > 1)
+		pr_info("JIT INFO: bpf_int_jit_compile: 2\n");
 	ctx.offsets = kcalloc(prog->len + 1, sizeof(*ctx.offsets), GFP_KERNEL);
 	if (ctx.offsets == NULL)
 		goto out_err;
@@ -2543,6 +2585,8 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 	 * First pass discovers used resources and instruction offsets
 	 * assuming short branches are used.
 	 */
+	if (bpf_jit_enable > 1)
+		pr_info("JIT INFO: bpf_int_jit_compile: 3\n");
 	if (build_int_body(&ctx))
 		goto out_err;
 
@@ -2564,6 +2608,8 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 	 * offsets.  This is done until no additional conversions are
 	 * necessary.
 	 */
+	if (bpf_jit_enable > 1)
+		pr_info("JIT INFO: bpf_int_jit_compile: 4\n");
 	do {
 		ctx.idx = 0;
 		ctx.gen_b_offsets = 1;
@@ -2586,6 +2632,8 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 	ctx.target = (u32 *)image_ptr;
 
 	/* Third pass generates the code */
+	if (bpf_jit_enable > 1)
+		pr_info("JIT INFO: bpf_int_jit_compile: 5\n");
 	ctx.idx = 0;
 	if (gen_int_prologue(&ctx))
 		goto out_err;
@@ -2606,6 +2654,8 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 	prog->bpf_func = (void *)ctx.target;
 	prog->jited = 1;
 	prog->jited_len = image_size;
+	if (bpf_jit_enable > 1)
+		pr_info("JIT INFO: bpf_int_jit_compile: 6\n");
 out_normal:
 	if (tmp_blinded)
 		bpf_jit_prog_release_other(prog, prog == orig_prog ?
@@ -2616,6 +2666,8 @@ out_normal:
 	return prog;
 
 out_err:
+	if (bpf_jit_enable > 1)
+		pr_info("JIT INFO: bpf_int_jit_compile: out_err\n");
 	prog = orig_prog;
 	if (header)
 		bpf_jit_binary_free(header);
