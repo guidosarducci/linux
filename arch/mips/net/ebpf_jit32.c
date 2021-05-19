@@ -1464,11 +1464,20 @@ static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 		}
 		break;
 	case BPF_JMP | BPF_EXIT:
+		/*
+		 * Prefer relative branch for easier debugging, but
+		 * fall back if needed.
+		 */
 		if (this_idx + 1 < exit_idx) {
 			b_off = b_imm(exit_idx, ctx);
-			if (is_bad_offset(b_off))
-				return -E2BIG;
-			emit_instr(ctx, b, b_off);
+			if (is_bad_offset(b_off)) { /* TODO: also MIPS64*/
+				target = j_target(ctx, exit_idx);
+				if (target == (unsigned int)-1)
+					return -E2BIG;
+				emit_instr(ctx, j, target);
+			} else {
+				emit_instr(ctx, b, b_off);
+			}
 			emit_instr(ctx, nop);
 		}
 		break;
