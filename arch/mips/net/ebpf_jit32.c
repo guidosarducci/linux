@@ -2338,6 +2338,7 @@ static int reg_val_propagate_range(struct jit_ctx *ctx, u64 initial_rvt,
 			rvt[idx] |= RVT_DONE;
 			break;
 		case BPF_JMP:
+		case BPF_JMP32:
 			switch (BPF_OP(insn->code)) {
 			case BPF_EXIT:
 				rvt[idx] = RVT_DONE | exit_rvt;
@@ -2372,6 +2373,9 @@ static int reg_val_propagate_range(struct jit_ctx *ctx, u64 initial_rvt,
 				for (reg = BPF_REG_0; reg <= BPF_REG_5; reg++)
 					set_reg_val_type(&exit_rvt, reg, REG_64BIT);
 
+				rvt[idx] |= RVT_DONE;
+				break;
+			case BPF_TAIL_CALL:
 				rvt[idx] |= RVT_DONE;
 				break;
 			default:
