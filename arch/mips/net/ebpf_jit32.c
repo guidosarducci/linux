@@ -1675,15 +1675,36 @@ static int reg_val_propagate_range(struct jit_ctx *ctx, u64 initial_rvt,
 			rvt[idx] |= RVT_DONE;
 			break;
 		case BPF_JMP:
+		case BPF_JMP32:
 			switch (BPF_OP(insn->code)) {
 			case BPF_EXIT:
 				rvt[idx] = RVT_DONE | exit_rvt;
 				rvt[prog->len] = exit_rvt;
 				return idx;
 			case BPF_JA:
+			{
+				int tgt = idx + 1 + insn->off;
+				bool visited = (rvt[tgt] & RVT_FALL_THROUGH);
+
 				rvt[idx] |= RVT_DONE;
+				/*
+				 * Verifier dead code patching can use
+				 * infinite-loop traps, causing hangs and
+				 * RCU stalls here. Treat traps as nops
+				 * if detected and fall through.
+				 */
+				if (insn->off == -1)
+					break;
+				/*
+				 * Bounded loops can cause the same issues in
+				 * fallthrough mode; follow only if jump target
+				 * unvisited to mitigate.
+				 */
+				if (insn->off < 0 && !follow_taken && visited)
+					break;
 				idx += insn->off;
 				break;
+			}
 			case BPF_JEQ:
 			case BPF_JGT:
 			case BPF_JGE:
@@ -1709,6 +1730,9 @@ static int reg_val_propagate_range(struct jit_ctx *ctx, u64 initial_rvt,
 				for (reg = BPF_REG_0; reg <= BPF_REG_5; reg++)
 					set_reg_val_type(&exit_rvt, reg, REG_64BIT);
 
+				rvt[idx] |= RVT_DONE;
+				break;
+			case BPF_TAIL_CALL:
 				rvt[idx] |= RVT_DONE;
 				break;
 			default:
