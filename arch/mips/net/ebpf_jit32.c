@@ -2248,9 +2248,20 @@ static int reg_val_propagate_range(struct jit_ctx *ctx, u64 initial_rvt,
 	int idx;
 	int reg;
 
+	if (bpf_jit_enable > 1) {
+		pr_info("JIT INFO: reg_val_propagate_range: 1\n");
+		for (idx = start_idx; idx < prog->len; idx++) {
+			insn = prog->insnsi + idx;
+			pr_info("reg_val_propagate_range: idx (%d of %d) code (%02x) imm %d off %d\n",
+				idx, prog->len, (unsigned int)insn->code, insn->imm, insn->off);
+		}
+	}
 	for (idx = start_idx; idx < prog->len; idx++) {
 		rvt[idx] = (rvt[idx] & RVT_VISITED_MASK) | exit_rvt;
 		insn = prog->insnsi + idx;
+		if (bpf_jit_enable > 1)
+			pr_info("reg_val_propagate_range: idx (%d of %d) code (%02x) imm %d off %d\n",
+			idx, prog->len, (unsigned int)insn->code, insn->imm, insn->off);
 		switch (BPF_CLASS(insn->code)) {
 		case BPF_ALU:
 			switch (BPF_OP(insn->code)) {
@@ -2448,6 +2459,8 @@ static int reg_val_propagate(struct jit_ctx *ctx)
 	int reg;
 	int i;
 
+	if (bpf_jit_enable > 1)
+		pr_info("JIT INFO: reg_val_propagate: 1\n");
 	/*
 	 * 11 registers * 3 bits/reg leaves top bits free for other
 	 * uses.  Bit-62..63 used to see if we have visited an insn.
@@ -2464,6 +2477,8 @@ static int reg_val_propagate(struct jit_ctx *ctx)
 	 */
 	reg_val_propagate_range(ctx, exit_rvt, 0, false);
 restart_search:
+	if (bpf_jit_enable > 1)
+		pr_info("JIT INFO: reg_val_propagate: 2\n");
 	/*
 	 * Then repeatedly find the first conditional branch where
 	 * both edges of control flow have not been taken, and follow
@@ -2518,6 +2533,8 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 	unsigned int image_size;
 	u8 *image_ptr;
 
+	if (bpf_jit_enable > 1)
+		pr_info("JIT INFO: bpf_int_jit_compile: 1\n");
 	if (!prog->jit_requested)
 		return prog;
 
@@ -2547,6 +2564,8 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 	}
 	preempt_enable();
 
+	if (bpf_jit_enable > 1)
+		pr_info("JIT INFO: bpf_int_jit_compile: 2\n");
 	ctx.offsets = kcalloc(prog->len + 1, sizeof(*ctx.offsets), GFP_KERNEL);
 	if (ctx.offsets == NULL)
 		goto out_err;
@@ -2564,6 +2583,8 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 	 * First pass discovers used resources and instruction offsets
 	 * assuming short branches are used.
 	 */
+	if (bpf_jit_enable > 1)
+		pr_info("JIT INFO: bpf_int_jit_compile: 3\n");
 	if (build_int_body(&ctx))
 		goto out_err;
 
@@ -2585,6 +2606,8 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 	 * offsets.  This is done until no additional conversions are
 	 * necessary.
 	 */
+	if (bpf_jit_enable > 1)
+		pr_info("JIT INFO: bpf_int_jit_compile: 4\n");
 	do {
 		ctx.idx = 0;
 		ctx.gen_b_offsets = 1;
@@ -2607,6 +2630,8 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 	ctx.target = (u32 *)image_ptr;
 
 	/* Third pass generates the code */
+	if (bpf_jit_enable > 1)
+		pr_info("JIT INFO: bpf_int_jit_compile: 5\n");
 	ctx.idx = 0;
 	if (gen_int_prologue(&ctx))
 		goto out_err;
@@ -2627,6 +2652,8 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 	prog->bpf_func = (void *)ctx.target;
 	prog->jited = 1;
 	prog->jited_len = image_size;
+	if (bpf_jit_enable > 1)
+		pr_info("JIT INFO: bpf_int_jit_compile: 6\n");
 out_normal:
 	if (tmp_blinded)
 		bpf_jit_prog_release_other(prog, prog == orig_prog ?
@@ -2637,6 +2664,8 @@ out_normal:
 	return prog;
 
 out_err:
+	if (bpf_jit_enable > 1)
+		pr_info("JIT INFO: bpf_int_jit_compile: out_err\n");
 	prog = orig_prog;
 	if (header)
 		bpf_jit_binary_free(header);
