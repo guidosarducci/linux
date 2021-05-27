@@ -2346,7 +2346,14 @@ static int reg_val_propagate_range(struct jit_ctx *ctx, u64 initial_rvt,
 				return idx;
 			case BPF_JA:
 				rvt[idx] |= RVT_DONE;
-				idx += insn->off;
+				/*
+				 * Commit 2a5418a13fcf made dead code patching
+				 * use infinite-loop traps instead of nops, and
+				 * can cause hangs and RCU stalls here. Treat a
+				 * trap as a nop if detected and fall through.
+				 */
+				if (insn->off != -1)
+					idx += insn->off;
 				break;
 			case BPF_JEQ:
 			case BPF_JGT:
