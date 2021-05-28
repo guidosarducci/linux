@@ -2345,6 +2345,10 @@ static int reg_val_propagate_range(struct jit_ctx *ctx, u64 initial_rvt,
 				rvt[prog->len] = exit_rvt;
 				return idx;
 			case BPF_JA:
+			{
+				int tgt = idx + 1 + insn->off;
+				bool visited = (rvt[tgt] & RVT_FALL_THROUGH);
+
 				rvt[idx] |= RVT_DONE;
 				/*
 				 * Commit 2a5418a13fcf made dead code patching
@@ -2352,9 +2356,18 @@ static int reg_val_propagate_range(struct jit_ctx *ctx, u64 initial_rvt,
 				 * can cause hangs and RCU stalls here. Treat a
 				 * trap as a nop if detected and fall through.
 				 */
-				if (insn->off != -1)
-					idx += insn->off;
+				if (insn->off == -1)
+					break;
+				/*
+				 * Bounded loops can cause the same issues in
+				 * fallthrough mode; follow only if jump target
+				 * unvisited to mitigate.
+				 */
+				if (insn->off < 0 && !follow_taken && visited)
+					break;
+				idx += insn->off;
 				break;
+			}
 			case BPF_JEQ:
 			case BPF_JGT:
 			case BPF_JGE:
