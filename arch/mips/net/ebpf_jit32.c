@@ -429,6 +429,8 @@ static int gen_int_prologue(struct jit_ctx *ctx)
 	 * passed in from the caller.
 	 */
 	emit_instr(ctx, addiu, tcc_reg, MIPS_R_ZERO, MAX_TAIL_CALL_CNT);
+	if (bpf_jit_enable > 2)
+		emit_instr(ctx, break, 0);
 
 	/*
 	 * Temporary kludge needed to set up BPF R1 from MIPS $a0 (context),
