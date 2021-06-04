@@ -78,7 +78,7 @@
 #define EBPF_SAVE_RA	BIT(9)
 #define EBPF_SEEN_FP	BIT(10)
 #define EBPF_SEEN_TC	BIT(11)
-#define EBPF_TCC_IN_V1	BIT(12)
+#define EBPF_TCC_IN_REG	BIT(12)
 
 /* Extra JIT registers mapped from BPF to MIPS */
 enum {
@@ -2003,14 +2003,14 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 		goto out_err;
 
 	/*
-	 * If no calls are made (EBPF_SAVE_RA), then tail call count
-	 * in $v1, else we must save in n$s4.
+	 * If no calls are made (EBPF_SAVE_RA), then tail call count located
+	 * in store reg, else we must backup in save reg.
 	 */
 	if (ctx.flags & EBPF_SEEN_TC) {
 		if (ctx.flags & EBPF_SAVE_RA)
-			ctx.flags |= EBPF_SAVE_S4;
+			ctx.flags |= bpf2mips[JIT_SAV_TCC].flags;
 		else
-			ctx.flags |= EBPF_TCC_IN_V1;
+			ctx.flags |= EBPF_TCC_IN_REG;
 	}
 
 	/*
