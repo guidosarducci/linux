@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Just-In-Time compiler for eBPF filters on MIPS
- *
- * Copyright (c) 2017 Cavium, Inc.
+ * Just-In-Time compiler for eBPF filters on MIPS32
+ * Copyright (c) 2021 Tony Ambardar <Tony.Ambardar@gmail.com>
  *
  * Based on code from:
+ *
+ * Copyright (c) 2017 Cavium, Inc.
+ * Author: David Daney <david.daney@cavium.com>
  *
  * Copyright (c) 2014 Imagination Technologies Ltd.
  * Author: Markos Chandras <markos.chandras@imgtec.com>
@@ -76,7 +78,7 @@
 #define EBPF_SAVE_RA	BIT(9)
 #define EBPF_SEEN_FP	BIT(10)
 #define EBPF_SEEN_TC	BIT(11)
-#define EBPF_TCC_IN_V1	BIT(12)
+#define EBPF_TCC_IN_REG	BIT(12)
 
 /* Extra JIT registers mapped from BPF to MIPS */
 enum {
@@ -162,6 +164,15 @@ static inline bool isbigend(void)
 }
 
 /*
+ * Under MIPS32 O32 ABI calling convention, u64 BPF regs R1-R2 are passed
+ * via reg pairs in $a0-$a3, while BPF regs R3-R5 are passed via the stack.
+ * Stack space is always reserved for $a0-$a3, with the whole area aligned
+ * to double-word.
+ */
+#define ARGS_RESV_SIZE (2 * sizeof(u64))
+#define ARGS_SIZE ALIGN(5 * sizeof(u64), 8)
+
+/*
  * For the mips64 ISA, we need to track the value range or type for
  * each JIT register.  The BPF machine requires zero extended 32-bit
  * values, but the mips64 ISA requires sign extended 32-bit values.
@@ -201,6 +212,7 @@ enum reg_val_type {
 struct jit_ctx {
 	const struct bpf_prog *skf;
 	int stack_size;
+	int bpf_stack_off;
 	u32 idx;
 	u32 flags;
 	u32 *offsets;
@@ -358,16 +370,25 @@ bad_reg:
  *                      |      .                         |
  *                      |      .                         |
  *                      |      .                         |
- *     $sp -------->    +--------------------------------+
+ *                      +--------------------------------+
+ *                      |   BPF_CALL function arguments  |
+ *                      |     ARGS_SIZE (if $ra saved)   |
+ *                      |      .        (and O32 ABI )   |
+ *                      |      .                         |
+ *        $sp ------>   +--------------------------------+
  *
  * If BPF_REG_10 is never referenced, then the MAX_BPF_STACK sized
  * area is not allocated.
  */
 static int gen_int_prologue(struct jit_ctx *ctx)
 {
+	int tcc_reg = bpf2mips[JIT_REG_TCC].reg;
+	int tcc_sav = bpf2mips[JIT_SAV_TCC].reg;
+	int r1 = bpf2mips[BPF_REG_1].reg;
 	int stack_adjust = 0;
 	int store_offset;
 	int locals_size;
+	int args_size;
 
 	if (ctx->flags & EBPF_SAVE_RA)
 		/*
@@ -396,17 +417,38 @@ static int gen_int_prologue(struct jit_ctx *ctx)
 
 	BUILD_BUG_ON(MAX_BPF_STACK & 7);
 	locals_size = (ctx->flags & EBPF_SEEN_FP) ? MAX_BPF_STACK : 0;
+	args_size = !is64bit() && (ctx->flags & EBPF_SAVE_RA) ? ARGS_SIZE : 0;
 
-	stack_adjust += locals_size;
+	stack_adjust += args_size + locals_size;
 
 	ctx->stack_size = stack_adjust;
+	ctx->bpf_stack_off = args_size + locals_size;
 
 	/*
-	 * First instruction initializes the tail call count (TCC).
-	 * On tail call we skip this instruction, and the TCC is
-	 * passed in $v1 from the caller.
+	 * First instruction initializes the tail call count (TCC) if
+	 * called from kernel or via BPF tail call. A BPF tail-caller
+	 * will skip this instruction and pass the TCC via register.
+	 * As a BPF2BPF subprog, we are called directly and must avoid
+	 * resetting the TCC.
 	 */
-	emit_instr(ctx, addiu, MIPS_R_V1, MIPS_R_ZERO, MAX_TAIL_CALL_CNT);
+	if (!ctx->skf->is_func)
+		emit_instr(ctx, addiu, tcc_reg, MIPS_R_ZERO, MAX_TAIL_CALL_CNT);
+
+	/*
+	 * If called from kernel under O32 ABI we must set up BPF R1 context,
+	 * since BPF R1 is an endian-order regster pair ($a0:$a1 or $a1:$a0)
+	 * but context is always passed in $a0 as 32-bit pointer. Entry from
+	 * a tail-call looks just like a kernel call, which means the caller
+	 * must set up R1 context according to the kernel call ABI. If we are
+	 * a BPF2BPF call then all registers are already correctly set up.
+	 */
+	if (!is64bit() && !ctx->skf->is_func) {
+		if (isbigend())
+			emit_instr(ctx, move, LO(r1), MIPS_R_A0);
+		/* Sanitize upper 32-bit reg */
+		gen_zext_insn(r1, true, ctx);
+	}
+
 	if (stack_adjust)
 		emit_instr_long(ctx, daddiu, addiu,
 					MIPS_R_SP, MIPS_R_SP, -stack_adjust);
@@ -466,8 +508,8 @@ static int gen_int_prologue(struct jit_ctx *ctx)
 		store_offset -= sizeof(long);
 	}
 
-	if ((ctx->flags & EBPF_SEEN_TC) && !(ctx->flags & EBPF_TCC_IN_V1))
-		emit_instr(ctx, move, MIPS_R_S4, MIPS_R_V1);
+	if ((ctx->flags & EBPF_SEEN_TC) && !(ctx->flags & EBPF_TCC_IN_REG))
+		emit_instr(ctx, move, tcc_sav, tcc_reg);
 
 	return 0;
 }
@@ -477,14 +519,38 @@ static int build_int_epilogue(struct jit_ctx *ctx, int dest_reg)
 	const struct bpf_prog *prog = ctx->skf;
 	int stack_adjust = ctx->stack_size;
 	int store_offset = stack_adjust - sizeof(long);
+	int r1 = bpf2mips[BPF_REG_1].reg;
+	int r0 = bpf2mips[BPF_REG_0].reg;
 	enum reg_val_type td;
-	int r0 = MIPS_R_V0;
 
-	if (dest_reg == MIPS_R_RA) {
-		/* Don't let zero extended value escape. */
-		td = get_reg_val_type(ctx, prog->len, BPF_REG_0);
-		if (td == REG_64BIT)
-			emit_instr(ctx, sll, r0, r0, 0);
+	/*
+	 * Returns from BPF2BPF calls consistently use the BPF 64-bit ABI
+	 * i.e. register usage and mapping between JIT and OS is unchanged.
+	 * Returning to the kernel must follow the N64 or O32 ABI, and for
+	 * the latter requires fixup of BPF R0 to MIPS V0 register mapping.
+	 *
+	 * Tails calls must ensure the passed R1 context is consistent with
+	 * the kernel ABI, and requires fixup on MIPS32 bigendian systems.
+	 */
+	if (dest_reg == MIPS_R_RA && !ctx->skf->is_func) { /* kernel return */
+		if (is64bit()) {
+			/* Don't let zero extended value escape. */
+			td = get_reg_val_type(ctx, prog->len, BPF_REG_0);
+			if (td == REG_64BIT)
+				gen_signext_insn(r0, ctx);
+		} else if (isbigend()) { /* and 32-bit */
+			/*
+			 * O32 ABI specifies 32-bit return value always
+			 * placed in MIPS_R_V0 regardless of the native
+			 * endianness. This would be in the wrong position
+			 * in a BPF R0 reg pair on big-endian systems, so
+			 * we must relocate.
+			 */
+			emit_instr(ctx, move, MIPS_R_V0, LO(r0));
+		}
+	} else if (dest_reg == MIPS_R_T9) { /* tail call */
+		if (!is64bit() && isbigend())
+			emit_instr(ctx, move, MIPS_R_A0, LO(r1));
 	}
 
 	if (ctx->flags & EBPF_SAVE_RA) {
@@ -547,6 +613,29 @@ static int build_int_epilogue(struct jit_ctx *ctx, int dest_reg)
 		emit_instr(ctx, nop);
 
 	return 0;
+}
+
+/* Sign-extend dst register or HI 32-bit reg of pair. */
+static inline void gen_signext_insn(int dst, struct jit_ctx *ctx)
+{
+	if (is64bit())
+		emit_instr(ctx, sll, dst, dst, 0);
+	else
+		emit_instr(ctx, sra, HI(dst), LO(dst), 31);
+}
+
+/*
+ * Zero-extend dst register or HI 32-bit reg of pair, if either forced
+ * or the BPF verifier does not insert its own zext insns.
+ */
+static inline void gen_zext_insn(int dst, bool force, struct jit_ctx *ctx)
+{
+	if (!ctx->skf->aux->verifier_zext || force) {
+		if (is64bit())
+			emit_instr(ctx, dinsu, dst, MIPS_R_ZERO, 32, 32);
+		else
+			emit_instr(ctx, and, HI(dst), MIPS_R_ZERO, MIPS_R_ZERO);
+	}
 }
 
 static void gen_imm_to_reg(const struct bpf_insn *insn, int reg,
@@ -747,10 +836,23 @@ static void emit_const_to_reg(struct jit_ctx *ctx, int dst, u64 value)
 	}
 }
 
+/*
+ * Tail call helper arguments passed via BPF ABI as u64 parameters. On
+ * MIPS64 N64 ABI systems these are native regs, while on MIPS32 O32 ABI
+ * systems these are reg pairs:
+ *
+ * R1 -> &ctx
+ * R2 -> &array
+ * R3 -> index
+ */
 static int emit_bpf_tail_call(struct jit_ctx *ctx, int this_idx)
 {
+	int tcc_reg = bpf2mips[JIT_REG_TCC].reg;
+	int tcc_sav = bpf2mips[JIT_SAV_TCC].reg;
+	int r2 = bpf2mips[BPF_REG_2].reg;
+	int r3 = bpf2mips[BPF_REG_3].reg;
 	int off, b_off;
-	int tcc_reg;
+	int tcc;
 
 	ctx->flags |= EBPF_SEEN_TC;
 	/*
@@ -760,41 +862,41 @@ static int emit_bpf_tail_call(struct jit_ctx *ctx, int this_idx)
 	/* Mask index as 32-bit */
 	emit_instr(ctx, dinsu, MIPS_R_A2, MIPS_R_ZERO, 32, 32);
 	off = offsetof(struct bpf_array, map.max_entries);
-	emit_instr(ctx, lwu, MIPS_R_T5, off, MIPS_R_A1);
-	emit_instr(ctx, sltu, MIPS_R_AT, MIPS_R_T5, MIPS_R_A2);
+	emit_instr_long(ctx, lwu, lw, MIPS_R_AT, off, LO(r2));
+	emit_instr(ctx, sltu, MIPS_R_AT, MIPS_R_AT, LO(r3));
 	b_off = b_imm(this_idx + 1, ctx);
-	emit_instr(ctx, bne, MIPS_R_AT, MIPS_R_ZERO, b_off);
+	emit_instr(ctx, bnez, MIPS_R_AT, b_off);
 	/*
 	 * if (TCC-- < 0)
 	 *     goto out;
 	 */
 	/* Delay slot */
-	tcc_reg = (ctx->flags & EBPF_TCC_IN_V1) ? MIPS_R_V1 : MIPS_R_S4;
-	emit_instr(ctx, daddiu, MIPS_R_T5, tcc_reg, -1);
+	tcc = (ctx->flags & EBPF_TCC_IN_REG) ? tcc_reg : tcc_sav;
+	emit_instr_long(ctx, daddiu, addiu, MIPS_R_T8, tcc, -1);
 	b_off = b_imm(this_idx + 1, ctx);
-	emit_instr(ctx, bltz, tcc_reg, b_off);
+	emit_instr(ctx, bltz, tcc, b_off);
 	/*
 	 * prog = array->ptrs[index];
 	 * if (prog == NULL)
 	 *     goto out;
 	 */
 	/* Delay slot */
-	emit_instr(ctx, dsll, MIPS_R_T8, MIPS_R_A2, 3);
-	emit_instr(ctx, daddu, MIPS_R_T8, MIPS_R_T8, MIPS_R_A1);
+	emit_instr_long(ctx, dsll, sll, MIPS_R_AT, LO(r3), ilog2(sizeof(long)));
+	emit_instr_long(ctx, daddu, addu, MIPS_R_AT, MIPS_R_AT, LO(r2));
 	off = offsetof(struct bpf_array, ptrs);
-	emit_instr(ctx, ld, MIPS_R_AT, off, MIPS_R_T8);
+	emit_instr_long(ctx, ld, lw, MIPS_R_AT, off, MIPS_R_AT);
 	b_off = b_imm(this_idx + 1, ctx);
-	emit_instr(ctx, beq, MIPS_R_AT, MIPS_R_ZERO, b_off);
+	emit_instr(ctx, beqz, MIPS_R_AT, b_off);
 	/* Delay slot */
 	emit_instr(ctx, nop);
 
 	/* goto *(prog->bpf_func + 4); */
 	off = offsetof(struct bpf_prog, bpf_func);
-	emit_instr(ctx, ld, MIPS_R_T9, off, MIPS_R_AT);
+	emit_instr_long(ctx, ld, lw, MIPS_R_T9, off, MIPS_R_AT);
 	/* All systems are go... propagate TCC */
-	emit_instr(ctx, daddu, MIPS_R_V1, MIPS_R_T5, MIPS_R_ZERO);
+	emit_instr(ctx, move, tcc_reg, MIPS_R_T8);
 	/* Skip first instruction (TCC initialization) */
-	emit_instr(ctx, daddiu, MIPS_R_T9, MIPS_R_T9, 4);
+	emit_instr_long(ctx, daddiu, addiu, MIPS_R_T9, MIPS_R_T9, 4);
 	return build_int_epilogue(ctx, MIPS_R_T9);
 }
 
@@ -976,10 +1078,10 @@ static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 		did_move = false;
 		if (insn->src_reg == BPF_REG_10) {
 			if (bpf_op == BPF_MOV) {
-				emit_instr(ctx, daddiu, dst, MIPS_R_SP, MAX_BPF_STACK);
+				emit_instr(ctx, daddiu, dst, MIPS_R_SP, ctx->bpf_stack_off);
 				did_move = true;
 			} else {
-				emit_instr(ctx, daddiu, MIPS_R_AT, MIPS_R_SP, MAX_BPF_STACK);
+				emit_instr(ctx, daddiu, MIPS_R_AT, MIPS_R_SP, ctx->bpf_stack_off);
 				src = MIPS_R_AT;
 			}
 		} else if (get_reg_val_type(ctx, this_idx, insn->src_reg) == REG_32BIT) {
@@ -1513,7 +1615,7 @@ jeq_common:
 		if (insn->dst_reg == BPF_REG_10) {
 			ctx->flags |= EBPF_SEEN_FP;
 			dst = MIPS_R_SP;
-			mem_off = insn->off + MAX_BPF_STACK;
+			mem_off = insn->off + ctx->bpf_stack_off;
 		} else {
 			dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
 			if (dst < 0)
@@ -1544,7 +1646,7 @@ jeq_common:
 		if (insn->src_reg == BPF_REG_10) {
 			ctx->flags |= EBPF_SEEN_FP;
 			src = MIPS_R_SP;
-			mem_off = insn->off + MAX_BPF_STACK;
+			mem_off = insn->off + ctx->bpf_stack_off;
 		} else {
 			src = ebpf_to_mips_reg(ctx, insn, REG_SRC_NO_FP);
 			if (src < 0)
@@ -1579,7 +1681,7 @@ jeq_common:
 		if (insn->dst_reg == BPF_REG_10) {
 			ctx->flags |= EBPF_SEEN_FP;
 			dst = MIPS_R_SP;
-			mem_off = insn->off + MAX_BPF_STACK;
+			mem_off = insn->off + ctx->bpf_stack_off;
 		} else {
 			dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
 			if (dst < 0)
@@ -2030,14 +2132,14 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 		goto out_err;
 
 	/*
-	 * If no calls are made (EBPF_SAVE_RA), then tail call count
-	 * in $v1, else we must save in n$s4.
+	 * If no calls are made (EBPF_SAVE_RA), then tail call count located
+	 * in store reg, else we must backup in save reg.
 	 */
 	if (ctx.flags & EBPF_SEEN_TC) {
 		if (ctx.flags & EBPF_SAVE_RA)
-			ctx.flags |= EBPF_SAVE_S4;
+			ctx.flags |= bpf2mips[JIT_SAV_TCC].flags;
 		else
-			ctx.flags |= EBPF_TCC_IN_V1;
+			ctx.flags |= EBPF_TCC_IN_REG;
 	}
 
 	/*
