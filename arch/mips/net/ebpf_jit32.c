@@ -644,8 +644,9 @@ static void gen_imm_to_reg(const struct bpf_insn *insn, int reg,
 static int gen_imm_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 			int idx)
 {
-	int upper_bound, lower_bound;
 	int dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
+	int upper_bound, lower_bound, shamt;
+	int imm = insn->imm;
 
 	if (dst < 0)
 		return dst;
@@ -681,67 +682,126 @@ static int gen_imm_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 	 * Immediate move clobbers the register, so no sign/zero
 	 * extension needed.
 	 */
-	if (BPF_CLASS(insn->code) == BPF_ALU64 &&
-	    BPF_OP(insn->code) != BPF_MOV &&
-	    get_reg_val_type(ctx, idx, insn->dst_reg) == REG_32BIT)
-		emit_instr(ctx, dinsu, dst, MIPS_R_ZERO, 32, 32);
-	/* BPF_ALU | BPF_LSH doesn't need separate sign extension */
-	if (BPF_CLASS(insn->code) == BPF_ALU &&
-	    BPF_OP(insn->code) != BPF_LSH &&
-	    BPF_OP(insn->code) != BPF_MOV &&
-	    get_reg_val_type(ctx, idx, insn->dst_reg) != REG_32BIT)
-		emit_instr(ctx, sll, dst, dst, 0);
-
-	if (insn->imm >= lower_bound && insn->imm <= upper_bound) {
+	if (lower_bound <= imm && imm <= upper_bound) {
 		/* single insn immediate case */
 		switch (BPF_OP(insn->code) | BPF_CLASS(insn->code)) {
 		case BPF_ALU64 | BPF_MOV:
-			emit_instr(ctx, daddiu, dst, MIPS_R_ZERO, insn->imm);
-			break;
-		case BPF_ALU64 | BPF_AND:
-		case BPF_ALU | BPF_AND:
-			emit_instr(ctx, andi, dst, dst, insn->imm);
-			break;
-		case BPF_ALU64 | BPF_OR:
-		case BPF_ALU | BPF_OR:
-			emit_instr(ctx, ori, dst, dst, insn->imm);
-			break;
-		case BPF_ALU64 | BPF_XOR:
-		case BPF_ALU | BPF_XOR:
-			emit_instr(ctx, xori, dst, dst, insn->imm);
-			break;
-		case BPF_ALU64 | BPF_ADD:
-			emit_instr(ctx, daddiu, dst, dst, insn->imm);
-			break;
-		case BPF_ALU64 | BPF_SUB:
-			emit_instr(ctx, daddiu, dst, dst, -insn->imm);
-			break;
-		case BPF_ALU64 | BPF_RSH:
-			emit_instr(ctx, dsrl_safe, dst, dst, insn->imm & 0x3f);
-			break;
-		case BPF_ALU | BPF_RSH:
-			emit_instr(ctx, srl, dst, dst, insn->imm & 0x1f);
-			break;
-		case BPF_ALU64 | BPF_LSH:
-			emit_instr(ctx, dsll_safe, dst, dst, insn->imm & 0x3f);
-			break;
-		case BPF_ALU | BPF_LSH:
-			emit_instr(ctx, sll, dst, dst, insn->imm & 0x1f);
-			break;
-		case BPF_ALU64 | BPF_ARSH:
-			emit_instr(ctx, dsra_safe, dst, dst, insn->imm & 0x3f);
-			break;
-		case BPF_ALU | BPF_ARSH:
-			emit_instr(ctx, sra, dst, dst, insn->imm & 0x1f);
+			emit_instr(ctx, addiu, LO(dst), MIPS_R_ZERO, imm);
+			if (imm < 0)
+				gen_signext_insn(dst, ctx);
+			else
+				gen_zext_insn(dst, true, ctx);
 			break;
 		case BPF_ALU | BPF_MOV:
-			emit_instr(ctx, addiu, dst, MIPS_R_ZERO, insn->imm);
+			emit_instr(ctx, addiu, LO(dst), MIPS_R_ZERO, imm);
+			break;
+		case BPF_ALU64 | BPF_AND:
+			if (imm >= 0)
+				gen_zext_insn(dst, true, ctx);
+			fallthrough;
+		case BPF_ALU | BPF_AND:
+			emit_instr(ctx, andi, LO(dst), LO(dst), imm);
+			break;
+		case BPF_ALU64 | BPF_OR:
+			if (imm < 0)
+				emit_instr(ctx, nor, HI(dst),
+						MIPS_R_ZERO, MIPS_R_ZERO);
+			fallthrough;
+		case BPF_ALU | BPF_OR:
+			emit_instr(ctx, ori, LO(dst), LO(dst), imm);
+			break;
+		case BPF_ALU64 | BPF_XOR:
+			if (imm < 0)
+				emit_instr(ctx, nor, HI(dst),
+							HI(dst), MIPS_R_ZERO);
+			fallthrough;
+		case BPF_ALU | BPF_XOR:
+			emit_instr(ctx, xori, LO(dst), LO(dst), imm);
+			break;
+		case BPF_ALU64 | BPF_ADD:
+			emit_instr(ctx, addiu, LO(dst), LO(dst), imm);
+			if (imm < 0)
+				emit_instr(ctx, addiu, HI(dst), HI(dst), -1);
+			emit_instr(ctx, sltiu, MIPS_R_AT, LO(dst), imm);
+			/* sltu sets all bits 1 in R6 ISA i.e. == -1 */
+			if (MIPS_ISA_REV >= 6)
+				emit_instr(ctx, subu, HI(dst),
+							HI(dst), MIPS_R_AT);
+			else
+				emit_instr(ctx, addu, HI(dst),
+							HI(dst), MIPS_R_AT);
+			break;
+		case BPF_ALU64 | BPF_SUB:
+			emit_instr(ctx, addiu, MIPS_R_AT, LO(dst), -imm);
+			if (imm < 0)
+				emit_instr(ctx, addiu, HI(dst), HI(dst), 1);
+			emit_instr(ctx, sltu, MIPS_R_AT, LO(dst), MIPS_R_AT);
+			/* sltu sets all bits 1 in R6 ISA i.e. == -1 */
+			if (MIPS_ISA_REV >= 6)
+				emit_instr(ctx, addu, HI(dst),
+							HI(dst), MIPS_R_AT);
+			else
+				emit_instr(ctx, subu, HI(dst),
+							HI(dst), MIPS_R_AT);
+			emit_instr(ctx, addiu, LO(dst), LO(dst), -imm);
+			break;
+		case BPF_ALU64 | BPF_ARSH:
+			shamt = imm & 0x3f;
+			if (shamt >= 32) {
+				emit_instr(ctx, sra, LO(dst),
+							HI(dst), shamt - 32);
+				emit_instr(ctx, sra, HI(dst), HI(dst), 31);
+			} else if (shamt > 0) {
+				emit_instr(ctx, srl, LO(dst), LO(dst), shamt);
+				emit_instr(ctx, ins, LO(dst), HI(dst),
+							32 - shamt, shamt);
+				emit_instr(ctx, sra, HI(dst), HI(dst), shamt);
+			}
+			break;
+		case BPF_ALU64 | BPF_RSH:
+			shamt = imm & 0x3f;
+			if (shamt >= 32) {
+				emit_instr(ctx, srl, LO(dst),
+							HI(dst), shamt - 32);
+				emit_instr(ctx, and, HI(dst),
+							HI(dst), MIPS_R_ZERO);
+			} else if (shamt > 0) {
+				emit_instr(ctx, srl, LO(dst), LO(dst), shamt);
+				emit_instr(ctx, ins, LO(dst), HI(dst),
+							32 - shamt, shamt);
+				emit_instr(ctx, srl, HI(dst), HI(dst), shamt);
+			}
+			break;
+		case BPF_ALU64 | BPF_LSH:
+			shamt = imm & 0x3f;
+			if (shamt >= 32) {
+				emit_instr(ctx, sll, HI(dst),
+							LO(dst), shamt - 32);
+				emit_instr(ctx, and, LO(dst),
+							LO(dst), MIPS_R_ZERO);
+			} else if (shamt > 0) {
+				emit_instr(ctx, srl, MIPS_R_AT,
+							LO(dst), 32 - shamt);
+				emit_instr(ctx, sll, HI(dst), HI(dst), shamt);
+				emit_instr(ctx, sll, LO(dst), LO(dst), shamt);
+				emit_instr(ctx, or, HI(dst),
+							HI(dst), MIPS_R_AT);
+			}
+			break;
+		case BPF_ALU | BPF_RSH:
+			emit_instr(ctx, srl, LO(dst), LO(dst), imm & 0x1f);
+			break;
+		case BPF_ALU | BPF_LSH:
+			emit_instr(ctx, sll, LO(dst), LO(dst), imm & 0x1f);
+			break;
+		case BPF_ALU | BPF_ARSH:
+			emit_instr(ctx, sra, LO(dst), LO(dst), imm & 0x1f);
 			break;
 		case BPF_ALU | BPF_ADD:
-			emit_instr(ctx, addiu, dst, dst, insn->imm);
+			emit_instr(ctx, addiu, LO(dst), LO(dst), imm);
 			break;
 		case BPF_ALU | BPF_SUB:
-			emit_instr(ctx, addiu, dst, dst, -insn->imm);
+			emit_instr(ctx, addiu, LO(dst), LO(dst), -imm);
 			break;
 		default:
 			return -EINVAL;
@@ -749,33 +809,75 @@ static int gen_imm_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 	} else {
 		/* multi insn immediate case */
 		if (BPF_OP(insn->code) == BPF_MOV) {
-			gen_imm_to_reg(insn, dst, ctx);
+			gen_imm_to_reg(insn, LO(dst), ctx);
+			if (BPF_CLASS(insn->code) == BPF_ALU64)
+				gen_signext_insn(dst, ctx);
 		} else {
 			gen_imm_to_reg(insn, MIPS_R_AT, ctx);
 			switch (BPF_OP(insn->code) | BPF_CLASS(insn->code)) {
 			case BPF_ALU64 | BPF_AND:
+				if (imm >= 0)
+					gen_zext_insn(dst, true, ctx);
+				fallthrough;
 			case BPF_ALU | BPF_AND:
-				emit_instr(ctx, and, dst, dst, MIPS_R_AT);
+				emit_instr(ctx, and, LO(dst), LO(dst),
+								MIPS_R_AT);
 				break;
 			case BPF_ALU64 | BPF_OR:
+				if (imm < 0)
+					emit_instr(ctx, nor, HI(dst),
+						MIPS_R_ZERO, MIPS_R_ZERO);
+			fallthrough;
 			case BPF_ALU | BPF_OR:
-				emit_instr(ctx, or, dst, dst, MIPS_R_AT);
+				emit_instr(ctx, or, LO(dst), LO(dst),
+								MIPS_R_AT);
 				break;
 			case BPF_ALU64 | BPF_XOR:
+				if (imm < 0)
+					emit_instr(ctx, nor, HI(dst),
+							HI(dst), MIPS_R_ZERO);
+			fallthrough;
 			case BPF_ALU | BPF_XOR:
-				emit_instr(ctx, xor, dst, dst, MIPS_R_AT);
+				emit_instr(ctx, xor, LO(dst), LO(dst),
+								MIPS_R_AT);
 				break;
 			case BPF_ALU64 | BPF_ADD:
-				emit_instr(ctx, daddu, dst, dst, MIPS_R_AT);
+				emit_instr(ctx, addu, LO(dst),
+							LO(dst), MIPS_R_AT);
+				if (imm < 0)
+					emit_instr(ctx, addiu, HI(dst), HI(dst), -1);
+				emit_instr(ctx, sltu, MIPS_R_AT,
+							LO(dst), MIPS_R_AT);
+				/* sltu sets all bits 1 in R6 ISA i.e. == -1 */
+				if (MIPS_ISA_REV >= 6)
+					emit_instr(ctx, subu, HI(dst),
+							HI(dst), MIPS_R_AT);
+				else
+					emit_instr(ctx, addu, HI(dst),
+							HI(dst), MIPS_R_AT);
 				break;
 			case BPF_ALU64 | BPF_SUB:
-				emit_instr(ctx, dsubu, dst, dst, MIPS_R_AT);
+				emit_instr(ctx, subu, LO(dst),
+							LO(dst), MIPS_R_AT);
+				if (imm < 0)
+					emit_instr(ctx, addiu, HI(dst), HI(dst), 1);
+				emit_instr(ctx, sltu, MIPS_R_AT,
+							MIPS_R_AT, LO(dst));
+				/* sltu sets all bits 1 in R6 ISA i.e. == -1 */
+				if (MIPS_ISA_REV >= 6)
+					emit_instr(ctx, addu, HI(dst),
+							HI(dst), MIPS_R_AT);
+				else
+					emit_instr(ctx, subu, HI(dst),
+							HI(dst), MIPS_R_AT);
 				break;
 			case BPF_ALU | BPF_ADD:
-				emit_instr(ctx, addu, dst, dst, MIPS_R_AT);
+				emit_instr(ctx, addu, LO(dst), LO(dst),
+								MIPS_R_AT);
 				break;
 			case BPF_ALU | BPF_SUB:
-				emit_instr(ctx, subu, dst, dst, MIPS_R_AT);
+				emit_instr(ctx, subu, LO(dst), LO(dst),
+								MIPS_R_AT);
 				break;
 			default:
 				return -EINVAL;
@@ -911,40 +1013,39 @@ static bool is_bad_offset(int b_off)
 	return b_off > 0x1ffff || b_off < -0x20000;
 }
 
+#define UNSUPPORTED {return -EINVAL; }
 /* Returns the number of insn slots consumed. */
 static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 			  int this_idx, int exit_idx)
 {
-	int src, dst, r, td, ts, mem_off, b_off;
+	const int bpf_class = BPF_CLASS(insn->code);
+	const int bpf_size = BPF_SIZE(insn->code);
+	const int bpf_op = BPF_OP(insn->code);
+	int src, dst, tmp, r, mem_off, b_off;
 	bool need_swap, did_move, cmp_eq;
 	unsigned int target = 0;
-	u64 t64;
+	u64 t64u;
 	s64 t64s;
-	int bpf_op = BPF_OP(insn->code);
-
-	if (IS_ENABLED(CONFIG_32BIT) && ((BPF_CLASS(insn->code) == BPF_ALU64)
-						|| (bpf_op == BPF_DW)))
-		return -EINVAL;
 
 	switch (insn->code) {
 	case BPF_ALU64 | BPF_ADD | BPF_K: /* ALU64_IMM */
 	case BPF_ALU64 | BPF_SUB | BPF_K: /* ALU64_IMM */
-	case BPF_ALU64 | BPF_OR | BPF_K: /* ALU64_IMM */
-	case BPF_ALU64 | BPF_AND | BPF_K: /* ALU64_IMM */
 	case BPF_ALU64 | BPF_LSH | BPF_K: /* ALU64_IMM */
 	case BPF_ALU64 | BPF_RSH | BPF_K: /* ALU64_IMM */
-	case BPF_ALU64 | BPF_XOR | BPF_K: /* ALU64_IMM */
 	case BPF_ALU64 | BPF_ARSH | BPF_K: /* ALU64_IMM */
+	case BPF_ALU64 | BPF_XOR | BPF_K: /* ALU64_IMM */
 	case BPF_ALU64 | BPF_MOV | BPF_K: /* ALU64_IMM */
+	case BPF_ALU64 | BPF_OR | BPF_K: /* ALU64_IMM */
+	case BPF_ALU64 | BPF_AND | BPF_K: /* ALU64_IMM */
 	case BPF_ALU | BPF_MOV | BPF_K: /* ALU32_IMM */
 	case BPF_ALU | BPF_ADD | BPF_K: /* ALU32_IMM */
 	case BPF_ALU | BPF_SUB | BPF_K: /* ALU32_IMM */
-	case BPF_ALU | BPF_OR | BPF_K: /* ALU64_IMM */
-	case BPF_ALU | BPF_AND | BPF_K: /* ALU64_IMM */
-	case BPF_ALU | BPF_LSH | BPF_K: /* ALU64_IMM */
-	case BPF_ALU | BPF_RSH | BPF_K: /* ALU64_IMM */
-	case BPF_ALU | BPF_XOR | BPF_K: /* ALU64_IMM */
-	case BPF_ALU | BPF_ARSH | BPF_K: /* ALU64_IMM */
+	case BPF_ALU | BPF_OR | BPF_K: /* ALU32_IMM */
+	case BPF_ALU | BPF_AND | BPF_K: /* ALU32_IMM */
+	case BPF_ALU | BPF_LSH | BPF_K: /* ALU32_IMM */
+	case BPF_ALU | BPF_RSH | BPF_K: /* ALU32_IMM */
+	case BPF_ALU | BPF_XOR | BPF_K: /* ALU32_IMM */
+	case BPF_ALU | BPF_ARSH | BPF_K: /* ALU32_IMM */
 		r = gen_imm_insn(insn, ctx, this_idx);
 		if (r < 0)
 			return r;
@@ -953,125 +1054,185 @@ static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
 		if (dst < 0)
 			return dst;
-		if (get_reg_val_type(ctx, this_idx, insn->dst_reg) == REG_32BIT)
-			emit_instr(ctx, dinsu, dst, MIPS_R_ZERO, 32, 32);
 		if (insn->imm == 1) /* Mult by 1 is a nop */
 			break;
-		gen_imm_to_reg(insn, MIPS_R_AT, ctx);
+		src = MIPS_R_T8; /* Use tmp reg pair for imm */
+		gen_imm_to_reg(insn, LO(src), ctx);
+		emit_instr(ctx, sra, HI(src), LO(src), 31);
+		emit_instr(ctx, mul, HI(dst), HI(dst), LO(src));
+		emit_instr(ctx, mul, MIPS_R_AT, LO(dst), HI(src));
+		emit_instr(ctx, addu, HI(dst), HI(dst), MIPS_R_AT);
 		if (MIPS_ISA_REV >= 6) {
-			emit_instr(ctx, dmulu, dst, dst, MIPS_R_AT);
+			emit_instr(ctx, mulu, LO(dst), LO(dst), LO(src));
+			emit_instr(ctx, muhu, MIPS_R_AT, LO(dst), LO(src));
 		} else {
-			emit_instr(ctx, dmultu, MIPS_R_AT, dst);
-			emit_instr(ctx, mflo, dst);
+			emit_instr(ctx, multu, LO(dst), LO(src));
+			emit_instr(ctx, mfhi, MIPS_R_AT);
+			emit_instr(ctx, mflo, LO(dst));
 		}
+		emit_instr(ctx, addu, HI(dst), HI(dst), MIPS_R_AT);
 		break;
 	case BPF_ALU64 | BPF_NEG | BPF_K: /* ALU64_IMM */
 		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
 		if (dst < 0)
 			return dst;
-		if (get_reg_val_type(ctx, this_idx, insn->dst_reg) == REG_32BIT)
-			emit_instr(ctx, dinsu, dst, MIPS_R_ZERO, 32, 32);
-		emit_instr(ctx, dsubu, dst, MIPS_R_ZERO, dst);
+		emit_instr(ctx, subu, LO(dst), MIPS_R_ZERO, LO(dst));
+		emit_instr(ctx, subu, HI(dst), MIPS_R_ZERO, HI(dst));
+		emit_instr(ctx, sltu, MIPS_R_AT, MIPS_R_ZERO, LO(dst));
+		/* sltu sets all bits 1 in R6 ISA i.e. == -1 */
+		if (MIPS_ISA_REV >= 6)
+			emit_instr(ctx, addu, HI(dst), HI(dst), MIPS_R_AT);
+		else
+			emit_instr(ctx, subu, HI(dst), HI(dst), MIPS_R_AT);
 		break;
 	case BPF_ALU | BPF_MUL | BPF_K: /* ALU_IMM */
 		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
 		if (dst < 0)
 			return dst;
-		td = get_reg_val_type(ctx, this_idx, insn->dst_reg);
-		if (td == REG_64BIT) {
-			/* sign extend */
-			emit_instr(ctx, sll, dst, dst, 0);
-		}
 		if (insn->imm == 1) /* Mult by 1 is a nop */
 			break;
 		gen_imm_to_reg(insn, MIPS_R_AT, ctx);
 		if (MIPS_ISA_REV >= 6) {
-			emit_instr(ctx, mulu, dst, dst, MIPS_R_AT);
+			emit_instr(ctx, mulu, LO(dst), LO(dst), MIPS_R_AT);
 		} else {
-			emit_instr(ctx, multu, dst, MIPS_R_AT);
-			emit_instr(ctx, mflo, dst);
+			emit_instr(ctx, multu, LO(dst), MIPS_R_AT);
+			emit_instr(ctx, mflo, LO(dst));
 		}
 		break;
 	case BPF_ALU | BPF_NEG | BPF_K: /* ALU_IMM */
 		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
 		if (dst < 0)
 			return dst;
-		td = get_reg_val_type(ctx, this_idx, insn->dst_reg);
-		if (td == REG_64BIT) {
-			/* sign extend */
-			emit_instr(ctx, sll, dst, dst, 0);
-		}
-		emit_instr(ctx, subu, dst, MIPS_R_ZERO, dst);
+		emit_instr(ctx, subu, LO(dst), MIPS_R_ZERO, LO(dst));
 		break;
 	case BPF_ALU | BPF_DIV | BPF_K: /* ALU_IMM */
 	case BPF_ALU | BPF_MOD | BPF_K: /* ALU_IMM */
-		if (insn->imm == 0)
-			return -EINVAL;
 		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
 		if (dst < 0)
 			return dst;
-		td = get_reg_val_type(ctx, this_idx, insn->dst_reg);
-		if (td == REG_64BIT)
-			/* sign extend */
-			emit_instr(ctx, sll, dst, dst, 0);
 		if (insn->imm == 1) {
 			/* div by 1 is a nop, mod by 1 is zero */
 			if (bpf_op == BPF_MOD)
-				emit_instr(ctx, addu, dst, MIPS_R_ZERO, MIPS_R_ZERO);
+				emit_instr(ctx, move, LO(dst), MIPS_R_ZERO);
 			break;
 		}
 		gen_imm_to_reg(insn, MIPS_R_AT, ctx);
 		if (MIPS_ISA_REV >= 6) {
 			if (bpf_op == BPF_DIV)
-				emit_instr(ctx, divu_r6, dst, dst, MIPS_R_AT);
+				emit_instr(ctx, divu_r6, LO(dst),
+							LO(dst), MIPS_R_AT);
 			else
-				emit_instr(ctx, modu, dst, dst, MIPS_R_AT);
+				emit_instr(ctx, modu, LO(dst),
+							LO(dst), MIPS_R_AT);
 			break;
 		}
-		emit_instr(ctx, divu, dst, MIPS_R_AT);
+		emit_instr(ctx, divu, LO(dst), MIPS_R_AT);
 		if (bpf_op == BPF_DIV)
-			emit_instr(ctx, mflo, dst);
+			emit_instr(ctx, mflo, LO(dst));
 		else
-			emit_instr(ctx, mfhi, dst);
+			emit_instr(ctx, mfhi, LO(dst));
 		break;
-	case BPF_ALU64 | BPF_DIV | BPF_K: /* ALU_IMM */
-	case BPF_ALU64 | BPF_MOD | BPF_K: /* ALU_IMM */
-		if (insn->imm == 0)
-			return -EINVAL;
+	case BPF_ALU64 | BPF_DIV | BPF_K: /* ALU64_IMM */
+	case BPF_ALU64 | BPF_MOD | BPF_K: /* ALU64_IMM */
 		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
 		if (dst < 0)
 			return dst;
-		if (get_reg_val_type(ctx, this_idx, insn->dst_reg) == REG_32BIT)
-			emit_instr(ctx, dinsu, dst, MIPS_R_ZERO, 32, 32);
+		/* div by 1 is a nop, mod by 1 is zero */
 		if (insn->imm == 1) {
-			/* div by 1 is a nop, mod by 1 is zero */
-			if (bpf_op == BPF_MOD)
-				emit_instr(ctx, addu, dst, MIPS_R_ZERO, MIPS_R_ZERO);
+			if (bpf_op == BPF_MOD) {
+				emit_instr(ctx, move, LO(dst), MIPS_R_ZERO);
+				emit_instr(ctx, move, HI(dst), MIPS_R_ZERO);
+			}
+			break;
+		}
+		/* check for overflow and optimize div/mod by -1 */
+		if (insn->imm == -1) {
+			b_off = bpf_op == BPF_MOD ? 5 * 4 : 6 * 4;
+			emit_instr(ctx, bnez, LO(dst), b_off);
+			/* Delay slot */
+			emit_instr(ctx, lui, MIPS_R_AT, -0x8000);
+			emit_instr(ctx, bne, HI(dst), MIPS_R_AT, b_off - 2 * 4);
+			emit_instr(ctx, nop);
+			/* Overflow confirmed */
+			if (bpf_op == BPF_MOD) {
+				emit_instr(ctx, b, 3 * 4);
+				emit_instr(ctx, nop);
+			} else {
+				emit_instr(ctx, move, LO(dst), MIPS_R_ZERO);
+				emit_instr(ctx, b, 5 * 4);
+				/* Delay slot */
+				emit_instr(ctx, move, HI(dst), MIPS_R_ZERO);
+			}
+			/* div by -1 is neg, mod by -1 is zero */
+			if (bpf_op == BPF_MOD) {
+				emit_instr(ctx, move, LO(dst), MIPS_R_ZERO);
+				emit_instr(ctx, move, HI(dst), MIPS_R_ZERO);
+			} else {
+				emit_instr(ctx, subu, LO(dst),
+							MIPS_R_ZERO, LO(dst));
+				emit_instr(ctx, subu, HI(dst),
+							MIPS_R_ZERO, HI(dst));
+				emit_instr(ctx, sltu, MIPS_R_AT,
+							MIPS_R_ZERO, LO(dst));
+				/* sltu sets all bits 1 in R6 ISA i.e. == -1 */
+				if (MIPS_ISA_REV >= 6)
+					emit_instr(ctx, addu, HI(dst),
+							HI(dst), MIPS_R_AT);
+				else
+					emit_instr(ctx, subu, HI(dst),
+							HI(dst), MIPS_R_AT);
+			}
 			break;
 		}
 		gen_imm_to_reg(insn, MIPS_R_AT, ctx);
+
+		/* Make dst unsigned using neg and shift sign to divisor */
+		emit_instr(ctx, bgez, HI(dst), 6 * 4);
+		emit_instr(ctx, subu, MIPS_R_T8, MIPS_R_ZERO, LO(dst));
+		emit_instr(ctx, subu, HI(dst), MIPS_R_ZERO, HI(dst));
+		emit_instr(ctx, sltu, LO(dst), MIPS_R_ZERO, MIPS_R_T8);
+		/* sltu sets all bits 1 in R6 ISA i.e. == -1 */
+		if (MIPS_ISA_REV >= 6)
+			emit_instr(ctx, addu, HI(dst), HI(dst), LO(dst));
+		else
+			emit_instr(ctx, subu, HI(dst), HI(dst), LO(dst));
+		emit_instr(ctx, move, LO(dst), MIPS_R_T8);
+		emit_instr(ctx, subu, MIPS_R_AT, MIPS_R_ZERO, MIPS_R_AT);
+
 		if (MIPS_ISA_REV >= 6) {
-			if (bpf_op == BPF_DIV)
-				emit_instr(ctx, ddivu_r6, dst, dst, MIPS_R_AT);
-			else
-				emit_instr(ctx, modu, dst, dst, MIPS_R_AT);
+			if (bpf_op == BPF_DIV) {
+				emit_instr(ctx, div_r6, LO(dst), LO(dst), MIPS_R_AT);
+				emit_instr(ctx, div_r6, HI(dst), HI(dst), MIPS_R_AT);
+				emit_instr(ctx, mod, MIPS_R_AT, HI(dst), MIPS_R_AT);
+				emit_instr(ctx, addu, LO(dst), LO(dst), MIPS_R_AT);
+			} else {
+				emit_instr(ctx, mod, LO(dst), LO(dst), MIPS_R_AT);
+				gen_zext_insn(dst, true, ctx);
+			}
 			break;
 		}
-		emit_instr(ctx, ddivu, dst, MIPS_R_AT);
-		if (bpf_op == BPF_DIV)
-			emit_instr(ctx, mflo, dst);
-		else
-			emit_instr(ctx, mfhi, dst);
+		emit_instr(ctx, div, LO(dst), MIPS_R_AT);
+		if (bpf_op == BPF_DIV) {
+			emit_instr(ctx, mflo, LO(dst));
+			emit_instr(ctx, div, HI(dst), MIPS_R_AT);
+			emit_instr(ctx, mflo, HI(dst));
+			emit_instr(ctx, mfhi, MIPS_R_AT);
+			emit_instr(ctx, addu, LO(dst), LO(dst), MIPS_R_AT);
+		} else {
+			emit_instr(ctx, mfhi, LO(dst));
+			gen_zext_insn(dst, true, ctx);
+		}
 		break;
-	case BPF_ALU64 | BPF_MOV | BPF_X: /* ALU64_REG */
+	case BPF_ALU64 | BPF_DIV | BPF_X: /* ALU64_REG */
+	case BPF_ALU64 | BPF_MOD | BPF_X: /* ALU64_REG */
+		UNSUPPORTED;
+	case BPF_ALU64 | BPF_MUL | BPF_X: /* ALU64_REG */
 	case BPF_ALU64 | BPF_ADD | BPF_X: /* ALU64_REG */
 	case BPF_ALU64 | BPF_SUB | BPF_X: /* ALU64_REG */
+	case BPF_ALU64 | BPF_MOV | BPF_X: /* ALU64_REG */
 	case BPF_ALU64 | BPF_XOR | BPF_X: /* ALU64_REG */
 	case BPF_ALU64 | BPF_OR | BPF_X: /* ALU64_REG */
 	case BPF_ALU64 | BPF_AND | BPF_X: /* ALU64_REG */
-	case BPF_ALU64 | BPF_MUL | BPF_X: /* ALU64_REG */
-	case BPF_ALU64 | BPF_DIV | BPF_X: /* ALU64_REG */
-	case BPF_ALU64 | BPF_MOD | BPF_X: /* ALU64_REG */
 	case BPF_ALU64 | BPF_LSH | BPF_X: /* ALU64_REG */
 	case BPF_ALU64 | BPF_RSH | BPF_X: /* ALU64_REG */
 	case BPF_ALU64 | BPF_ARSH | BPF_X: /* ALU64_REG */
@@ -1079,55 +1240,78 @@ static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
 		if (src < 0 || dst < 0)
 			return -EINVAL;
-		if (get_reg_val_type(ctx, this_idx, insn->dst_reg) == REG_32BIT)
-			emit_instr(ctx, dinsu, dst, MIPS_R_ZERO, 32, 32);
 		did_move = false;
 		if (insn->src_reg == BPF_REG_10) {
 			if (bpf_op == BPF_MOV) {
-				emit_instr(ctx, daddiu, dst, MIPS_R_SP, ctx->bpf_stack_off);
+				emit_instr(ctx, addiu, LO(dst),
+						MIPS_R_SP, ctx->bpf_stack_off);
+				gen_zext_insn(dst, true, ctx);
 				did_move = true;
-			} else {
-				emit_instr(ctx, daddiu, MIPS_R_AT, MIPS_R_SP, ctx->bpf_stack_off);
-				src = MIPS_R_AT;
+			} else { /* Use T8 reg pair tmp for ALU64 arithmetic */
+				src = MIPS_R_T8;
+				emit_instr(ctx, addiu, LO(src),
+						MIPS_R_SP, ctx->bpf_stack_off);
+				emit_instr(ctx, move, HI(src), MIPS_R_ZERO);
 			}
-		} else if (get_reg_val_type(ctx, this_idx, insn->src_reg) == REG_32BIT) {
-			int tmp_reg = MIPS_R_AT;
-
-			if (bpf_op == BPF_MOV) {
-				tmp_reg = dst;
-				did_move = true;
-			}
-			emit_instr(ctx, daddu, tmp_reg, src, MIPS_R_ZERO);
-			emit_instr(ctx, dinsu, tmp_reg, MIPS_R_ZERO, 32, 32);
-			src = MIPS_R_AT;
 		}
 		switch (bpf_op) {
 		case BPF_MOV:
-			if (!did_move)
-				emit_instr(ctx, daddu, dst, src, MIPS_R_ZERO);
+			if (!did_move) {
+				emit_instr(ctx, move, LO(dst), LO(src));
+				emit_instr(ctx, move, HI(dst), HI(src));
+			}
 			break;
 		case BPF_ADD:
-			emit_instr(ctx, daddu, dst, dst, src);
+			emit_instr(ctx, addu, HI(dst), HI(dst), HI(src));
+			emit_instr(ctx, addu, MIPS_R_AT, LO(dst), LO(src));
+			emit_instr(ctx, sltu, MIPS_R_AT, MIPS_R_AT, LO(dst));
+			/* sltu sets all bits 1 in R6 ISA i.e. == -1 */
+			if (MIPS_ISA_REV >= 6)
+				emit_instr(ctx, subu, HI(dst),
+							HI(dst), MIPS_R_AT);
+			else
+				emit_instr(ctx, addu, HI(dst),
+							HI(dst), MIPS_R_AT);
+			emit_instr(ctx, addu, LO(dst), LO(dst), LO(src));
 			break;
 		case BPF_SUB:
-			emit_instr(ctx, dsubu, dst, dst, src);
+			emit_instr(ctx, subu, HI(dst), HI(dst), HI(src));
+			emit_instr(ctx, subu, MIPS_R_AT, LO(dst), LO(src));
+			emit_instr(ctx, sltu, MIPS_R_AT, LO(dst), MIPS_R_AT);
+			/* sltu sets all bits 1 in R6 ISA i.e. == -1 */
+			if (MIPS_ISA_REV >= 6)
+				emit_instr(ctx, addu, HI(dst),
+							HI(dst), MIPS_R_AT);
+			else
+				emit_instr(ctx, subu, HI(dst),
+							HI(dst), MIPS_R_AT);
+			emit_instr(ctx, subu, LO(dst), LO(dst), LO(src));
 			break;
 		case BPF_XOR:
-			emit_instr(ctx, xor, dst, dst, src);
+			emit_instr(ctx, xor, LO(dst), LO(dst), LO(src));
+			emit_instr(ctx, xor, HI(dst), HI(dst), HI(src));
 			break;
 		case BPF_OR:
-			emit_instr(ctx, or, dst, dst, src);
+			emit_instr(ctx, or, LO(dst), LO(dst), LO(src));
+			emit_instr(ctx, or, HI(dst), HI(dst), HI(src));
 			break;
 		case BPF_AND:
-			emit_instr(ctx, and, dst, dst, src);
+			emit_instr(ctx, and, LO(dst), LO(dst), LO(src));
+			emit_instr(ctx, and, HI(dst), HI(dst), HI(src));
 			break;
 		case BPF_MUL:
+			emit_instr(ctx, mul, HI(dst), HI(dst), LO(src));
+			emit_instr(ctx, mul, MIPS_R_AT, LO(dst), HI(src));
+			emit_instr(ctx, addu, HI(dst), HI(dst), MIPS_R_AT);
 			if (MIPS_ISA_REV >= 6) {
-				emit_instr(ctx, dmulu, dst, dst, src);
+				emit_instr(ctx, mulu, LO(dst), LO(dst), LO(src));
+				emit_instr(ctx, muhu, MIPS_R_AT, LO(dst), LO(src));
 			} else {
-				emit_instr(ctx, dmultu, dst, src);
-				emit_instr(ctx, mflo, dst);
+				emit_instr(ctx, multu, LO(dst), LO(src));
+				emit_instr(ctx, mfhi, MIPS_R_AT);
+				emit_instr(ctx, mflo, LO(dst));
 			}
+			emit_instr(ctx, addu, HI(dst), HI(dst), MIPS_R_AT);
 			break;
 		case BPF_DIV:
 		case BPF_MOD:
@@ -1146,13 +1330,46 @@ static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 				emit_instr(ctx, mfhi, dst);
 			break;
 		case BPF_LSH:
-			emit_instr(ctx, dsllv, dst, dst, src);
+			emit_instr(ctx, beqz, LO(src), 11 * 4);
+			emit_instr(ctx, addiu, MIPS_R_AT, LO(src), -32);
+			emit_instr(ctx, bltz, MIPS_R_AT, 4 * 4);
+			emit_instr(ctx, nop);
+			emit_instr(ctx, sllv, HI(dst), LO(dst), MIPS_R_AT);
+			emit_instr(ctx, and, LO(dst), LO(dst), MIPS_R_ZERO);
+			emit_instr(ctx, b, 5 * 4);
+			emit_instr(ctx, subu, MIPS_R_AT, MIPS_R_ZERO, MIPS_R_AT);
+			emit_instr(ctx, srlv, MIPS_R_AT, LO(dst), MIPS_R_AT);
+			emit_instr(ctx, sllv, HI(dst), HI(dst), LO(src));
+			emit_instr(ctx, sllv, LO(dst), LO(dst), LO(src));
+			emit_instr(ctx, or, HI(dst), HI(dst), MIPS_R_AT);
 			break;
 		case BPF_RSH:
-			emit_instr(ctx, dsrlv, dst, dst, src);
+			emit_instr(ctx, beqz, LO(src), 11 * 4);
+			emit_instr(ctx, addiu, MIPS_R_AT, LO(src), -32);
+			emit_instr(ctx, bltz, MIPS_R_AT, 4 * 4);
+			emit_instr(ctx, nop);
+			emit_instr(ctx, srlv, LO(dst), HI(dst), MIPS_R_AT);
+			emit_instr(ctx, and, HI(dst), HI(dst), MIPS_R_ZERO);
+			emit_instr(ctx, b, 5 * 4);
+			emit_instr(ctx, subu, MIPS_R_AT, MIPS_R_ZERO, MIPS_R_AT);
+			emit_instr(ctx, sllv, MIPS_R_AT, HI(dst), MIPS_R_AT);
+			emit_instr(ctx, srlv, HI(dst), HI(dst), LO(src));
+			emit_instr(ctx, srlv, LO(dst), LO(dst), LO(src));
+			emit_instr(ctx, or, LO(dst), LO(dst), MIPS_R_AT);
 			break;
 		case BPF_ARSH:
-			emit_instr(ctx, dsrav, dst, dst, src);
+			emit_instr(ctx, beqz, LO(src), 11 * 4);
+			emit_instr(ctx, addiu, MIPS_R_AT, LO(src), -32);
+			emit_instr(ctx, bltz, MIPS_R_AT, 4 * 4);
+			emit_instr(ctx, nop);
+			emit_instr(ctx, srav, LO(dst), HI(dst), MIPS_R_AT);
+			emit_instr(ctx, sra, HI(dst), HI(dst), 31);
+			emit_instr(ctx, b, 5 * 4);
+			emit_instr(ctx, subu, MIPS_R_AT, MIPS_R_ZERO, MIPS_R_AT);
+			emit_instr(ctx, sllv, MIPS_R_AT, HI(dst), MIPS_R_AT);
+			emit_instr(ctx, srav, HI(dst), HI(dst), LO(src));
+			emit_instr(ctx, srlv, LO(dst), LO(dst), LO(src));
+			emit_instr(ctx, or, LO(dst), LO(dst), MIPS_R_AT);
 			break;
 		default:
 			pr_err("ALU64_REG NOT HANDLED\n");
@@ -1171,74 +1388,75 @@ static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 	case BPF_ALU | BPF_LSH | BPF_X: /* ALU_REG */
 	case BPF_ALU | BPF_RSH | BPF_X: /* ALU_REG */
 	case BPF_ALU | BPF_ARSH | BPF_X: /* ALU_REG */
-		src = ebpf_to_mips_reg(ctx, insn, REG_SRC_NO_FP);
+		src = ebpf_to_mips_reg(ctx, insn, REG_SRC_FP_OK);
 		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
 		if (src < 0 || dst < 0)
 			return -EINVAL;
-		td = get_reg_val_type(ctx, this_idx, insn->dst_reg);
-		if (td == REG_64BIT) {
-			/* sign extend */
-			emit_instr(ctx, sll, dst, dst, 0);
+		/* Special BPF_MOV zext insn from verifier. */
+		if (insn_is_zext(insn)) {
+			gen_zext_insn(dst, true, ctx);
+			break;
 		}
 		did_move = false;
-		ts = get_reg_val_type(ctx, this_idx, insn->src_reg);
-		if (ts == REG_64BIT) {
-			int tmp_reg = MIPS_R_AT;
-
+		if (insn->src_reg == BPF_REG_10) {
 			if (bpf_op == BPF_MOV) {
-				tmp_reg = dst;
+				emit_instr(ctx, addiu, LO(dst),
+						MIPS_R_SP, ctx->bpf_stack_off);
 				did_move = true;
+			} else { /* Use T8 reg pair tmp for ALU32 arithmetic */
+				src = MIPS_R_T8;
+				emit_instr(ctx, addiu, LO(src),
+						MIPS_R_SP, ctx->bpf_stack_off);
 			}
-			/* sign extend */
-			emit_instr(ctx, sll, tmp_reg, src, 0);
-			src = MIPS_R_AT;
 		}
 		switch (bpf_op) {
 		case BPF_MOV:
 			if (!did_move)
-				emit_instr(ctx, addu, dst, src, MIPS_R_ZERO);
+				emit_instr(ctx, move, LO(dst), LO(src));
 			break;
 		case BPF_ADD:
-			emit_instr(ctx, addu, dst, dst, src);
+			emit_instr(ctx, addu, LO(dst), LO(dst), LO(src));
 			break;
 		case BPF_SUB:
-			emit_instr(ctx, subu, dst, dst, src);
+			emit_instr(ctx, subu, LO(dst), LO(dst), LO(src));
 			break;
 		case BPF_XOR:
-			emit_instr(ctx, xor, dst, dst, src);
+			emit_instr(ctx, xor, LO(dst), LO(dst), LO(src));
 			break;
 		case BPF_OR:
-			emit_instr(ctx, or, dst, dst, src);
+			emit_instr(ctx, or, LO(dst), LO(dst), LO(src));
 			break;
 		case BPF_AND:
-			emit_instr(ctx, and, dst, dst, src);
+			emit_instr(ctx, and, LO(dst), LO(dst), LO(src));
 			break;
 		case BPF_MUL:
-			emit_instr(ctx, mul, dst, dst, src);
+			emit_instr(ctx, mul, LO(dst), LO(dst), LO(src));
 			break;
 		case BPF_DIV:
 		case BPF_MOD:
 			if (MIPS_ISA_REV >= 6) {
 				if (bpf_op == BPF_DIV)
-					emit_instr(ctx, divu_r6, dst, dst, src);
+					emit_instr(ctx, divu_r6, LO(dst),
+							LO(dst), LO(src));
 				else
-					emit_instr(ctx, modu, dst, dst, src);
+					emit_instr(ctx, modu, LO(dst),
+							LO(dst), LO(src));
 				break;
 			}
-			emit_instr(ctx, divu, dst, src);
+			emit_instr(ctx, divu, LO(dst), LO(src));
 			if (bpf_op == BPF_DIV)
-				emit_instr(ctx, mflo, dst);
+				emit_instr(ctx, mflo, LO(dst));
 			else
-				emit_instr(ctx, mfhi, dst);
+				emit_instr(ctx, mfhi, LO(dst));
 			break;
 		case BPF_LSH:
-			emit_instr(ctx, sllv, dst, dst, src);
+			emit_instr(ctx, sllv, LO(dst), LO(dst), LO(src));
 			break;
 		case BPF_RSH:
-			emit_instr(ctx, srlv, dst, dst, src);
+			emit_instr(ctx, srlv, LO(dst), LO(dst), LO(src));
 			break;
 		case BPF_ARSH:
-			emit_instr(ctx, srav, dst, dst, src);
+			emit_instr(ctx, srav, LO(dst), LO(dst), LO(src));
 			break;
 		default:
 			pr_err("ALU_REG NOT HANDLED\n");
@@ -1259,101 +1477,192 @@ static int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 			emit_instr(ctx, nop);
 		}
 		break;
-	case BPF_JMP | BPF_JEQ | BPF_K: /* JMP_IMM */
-	case BPF_JMP | BPF_JNE | BPF_K: /* JMP_IMM */
-		cmp_eq = (bpf_op == BPF_JEQ);
-		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_FP_OK);
-		if (dst < 0)
-			return dst;
-		if (insn->imm == 0) {
-			src = MIPS_R_ZERO;
-		} else {
-			gen_imm_to_reg(insn, MIPS_R_AT, ctx);
-			src = MIPS_R_AT;
-		}
-		goto jeq_common;
-	case BPF_JMP | BPF_JEQ | BPF_X: /* JMP_REG */
-	case BPF_JMP | BPF_JNE | BPF_X:
-	case BPF_JMP | BPF_JSLT | BPF_X:
-	case BPF_JMP | BPF_JSLE | BPF_X:
-	case BPF_JMP | BPF_JSGT | BPF_X:
-	case BPF_JMP | BPF_JSGE | BPF_X:
-	case BPF_JMP | BPF_JLT | BPF_X:
-	case BPF_JMP | BPF_JLE | BPF_X:
-	case BPF_JMP | BPF_JGT | BPF_X:
-	case BPF_JMP | BPF_JGE | BPF_X:
-	case BPF_JMP | BPF_JSET | BPF_X:
+	case BPF_JMP32 | BPF_JSLT | BPF_X:
+	case BPF_JMP32 | BPF_JSLE | BPF_X:
+	case BPF_JMP32 | BPF_JSGT | BPF_X:
+	case BPF_JMP32 | BPF_JSGE | BPF_X:
 		src = ebpf_to_mips_reg(ctx, insn, REG_SRC_NO_FP);
 		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
 		if (src < 0 || dst < 0)
 			return -EINVAL;
-		td = get_reg_val_type(ctx, this_idx, insn->dst_reg);
-		ts = get_reg_val_type(ctx, this_idx, insn->src_reg);
-		if (td == REG_32BIT && ts != REG_32BIT) {
-			emit_instr(ctx, sll, MIPS_R_AT, src, 0);
-			src = MIPS_R_AT;
-		} else if (ts == REG_32BIT && td != REG_32BIT) {
-			emit_instr(ctx, sll, MIPS_R_AT, dst, 0);
-			dst = MIPS_R_AT;
-		}
-		if (bpf_op == BPF_JSET) {
-			emit_instr(ctx, and, MIPS_R_AT, dst, src);
-			cmp_eq = false;
-			dst = MIPS_R_AT;
-			src = MIPS_R_ZERO;
-		} else if (bpf_op == BPF_JSGT || bpf_op == BPF_JSLE) {
-			emit_instr(ctx, dsubu, MIPS_R_AT, dst, src);
-			if ((insn + 1)->code == (BPF_JMP | BPF_EXIT) && insn->off == 1) {
-				b_off = b_imm(exit_idx, ctx);
-				if (is_bad_offset(b_off))
-					return -E2BIG;
-				if (bpf_op == BPF_JSGT)
-					emit_instr(ctx, blez, MIPS_R_AT, b_off);
-				else
-					emit_instr(ctx, bgtz, MIPS_R_AT, b_off);
-				emit_instr(ctx, nop);
-				return 2; /* We consumed the exit. */
-			}
-			b_off = b_imm(this_idx + insn->off + 1, ctx);
-			if (is_bad_offset(b_off))
-				return -E2BIG;
-			if (bpf_op == BPF_JSGT)
-				emit_instr(ctx, bgtz, MIPS_R_AT, b_off);
-			else
-				emit_instr(ctx, blez, MIPS_R_AT, b_off);
-			emit_instr(ctx, nop);
+
+		cmp_eq = bpf_op == BPF_JSLE || bpf_op == BPF_JSGE;
+		switch (bpf_op) {
+		case BPF_JSGE:
+			emit_instr(ctx, slt, MIPS_R_AT, LO(dst), LO(src));
 			break;
-		} else if (bpf_op == BPF_JSGE || bpf_op == BPF_JSLT) {
-			emit_instr(ctx, slt, MIPS_R_AT, dst, src);
-			cmp_eq = bpf_op == BPF_JSGE;
-			dst = MIPS_R_AT;
-			src = MIPS_R_ZERO;
-		} else if (bpf_op == BPF_JGT || bpf_op == BPF_JLE) {
-			/* dst or src could be AT */
-			emit_instr(ctx, dsubu, MIPS_R_T8, dst, src);
-			emit_instr(ctx, sltu, MIPS_R_AT, dst, src);
-			/* SP known to be non-zero, movz becomes boolean not */
-			if (MIPS_ISA_REV >= 6) {
-				emit_instr(ctx, seleqz, MIPS_R_T9,
-						MIPS_R_SP, MIPS_R_T8);
-			} else {
-				emit_instr(ctx, movz, MIPS_R_T9,
-						MIPS_R_SP, MIPS_R_T8);
-				emit_instr(ctx, movn, MIPS_R_T9,
-						MIPS_R_ZERO, MIPS_R_T8);
-			}
-			emit_instr(ctx, or, MIPS_R_AT, MIPS_R_T9, MIPS_R_AT);
-			cmp_eq = bpf_op == BPF_JGT;
-			dst = MIPS_R_AT;
-			src = MIPS_R_ZERO;
-		} else if (bpf_op == BPF_JGE || bpf_op == BPF_JLT) {
-			emit_instr(ctx, sltu, MIPS_R_AT, dst, src);
-			cmp_eq = bpf_op == BPF_JGE;
-			dst = MIPS_R_AT;
-			src = MIPS_R_ZERO;
-		} else { /* JNE/JEQ case */
-			cmp_eq = (bpf_op == BPF_JEQ);
+		case BPF_JSLT:
+			emit_instr(ctx, slt, MIPS_R_AT, LO(dst), LO(src));
+			break;
+		case BPF_JSGT:
+			emit_instr(ctx, slt, MIPS_R_AT, LO(src), LO(dst));
+			break;
+		case BPF_JSLE:
+			emit_instr(ctx, slt, MIPS_R_AT, LO(src), LO(dst));
+			break;
 		}
+
+		src = MIPS_R_AT;
+		dst = MIPS_R_ZERO;
+		goto jeq_common;
+
+	case BPF_JMP | BPF_JSLT | BPF_X:
+	case BPF_JMP | BPF_JSLE | BPF_X:
+	case BPF_JMP | BPF_JSGT | BPF_X:
+	case BPF_JMP | BPF_JSGE | BPF_X:
+		src = ebpf_to_mips_reg(ctx, insn, REG_SRC_NO_FP);
+		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
+		if (src < 0 || dst < 0)
+			return -EINVAL;
+
+		/* Use T8 tmp reg pair and subtract to make signed compare.*/
+		tmp = MIPS_R_T8;
+		emit_instr(ctx, subu, HI(tmp), HI(dst), HI(src));
+		emit_instr(ctx, subu, LO(tmp), LO(dst), LO(src));
+		emit_instr(ctx, sltu, MIPS_R_AT, LO(dst), LO(tmp));
+		/* sltu sets all bits 1 in R6 ISA i.e. == -1 */
+		if (MIPS_ISA_REV >= 6)
+			emit_instr(ctx, addu, HI(tmp), HI(tmp), MIPS_R_AT);
+		else
+			emit_instr(ctx, subu, HI(tmp), HI(tmp), MIPS_R_AT);
+
+		if (MIPS_ISA_REV >= 6) {
+			emit_instr(ctx, bnez, HI(tmp), 3 * 4);
+			emit_instr(ctx, move, MIPS_R_AT, HI(tmp));
+			emit_instr(ctx, sltu, MIPS_R_AT, MIPS_R_ZERO, LO(tmp));
+			emit_instr(ctx, srl, MIPS_R_AT, MIPS_R_AT, 1);
+		} else {
+			emit_instr(ctx, bnez, HI(tmp), 2 * 4);
+			emit_instr(ctx, move, MIPS_R_AT, HI(tmp));
+			emit_instr(ctx, sltu, MIPS_R_AT, MIPS_R_ZERO, LO(tmp));
+		}
+
+		cmp_eq = bpf_op == BPF_JSLE || bpf_op == BPF_JSGE;
+		switch (bpf_op) {
+		case BPF_JSGE:
+		case BPF_JSLT:
+			emit_instr(ctx, slt, MIPS_R_AT, MIPS_R_AT, MIPS_R_ZERO);
+			break;
+		case BPF_JSGT:
+		case BPF_JSLE:
+			emit_instr(ctx, slt, MIPS_R_AT, MIPS_R_ZERO, MIPS_R_AT);
+			break;
+		}
+		src = MIPS_R_AT;
+		dst = MIPS_R_ZERO;
+		goto jeq_common;
+
+	case BPF_JMP | BPF_JLT | BPF_X: /* FIXME also support BPF FP?*/
+	case BPF_JMP | BPF_JLE | BPF_X:
+	case BPF_JMP | BPF_JGT | BPF_X:
+	case BPF_JMP | BPF_JGE | BPF_X:
+		src = ebpf_to_mips_reg(ctx, insn, REG_SRC_NO_FP);
+		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
+		if (src < 0 || dst < 0)
+			return -EINVAL;
+
+		cmp_eq = bpf_op == BPF_JGT || bpf_op == BPF_JGE;
+
+		if (bpf_op == BPF_JGT || bpf_op == BPF_JLE) {
+			/* Check dst <= src */
+			emit_instr(ctx, bne, HI(dst), HI(src), 4 * 4);
+			emit_instr(ctx, sltu, MIPS_R_AT, HI(dst), HI(src));
+			emit_instr(ctx, bne, LO(dst), LO(src), 2 * 4);
+			emit_instr(ctx, sltu, MIPS_R_AT, LO(dst), LO(src));
+			emit_instr(ctx, nor, MIPS_R_AT, MIPS_R_ZERO, MIPS_R_AT);
+		} else {
+			/* Check dst < src */
+			emit_instr(ctx, bne, HI(dst), HI(src), 2 * 4);
+			emit_instr(ctx, sltu, MIPS_R_AT, HI(dst), HI(src));
+			emit_instr(ctx, sltu, MIPS_R_AT, LO(dst), LO(src));
+		}
+
+		src = MIPS_R_AT;
+		dst = MIPS_R_ZERO;
+		goto jeq_common;
+
+	case BPF_JMP32 | BPF_JLT | BPF_X:
+	case BPF_JMP32 | BPF_JLE | BPF_X:
+	case BPF_JMP32 | BPF_JGT | BPF_X:
+	case BPF_JMP32 | BPF_JGE | BPF_X:
+		src = ebpf_to_mips_reg(ctx, insn, REG_SRC_NO_FP);
+		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
+		if (src < 0 || dst < 0)
+			return -EINVAL;
+
+		cmp_eq = bpf_op == BPF_JLE || bpf_op == BPF_JGE;
+		switch (bpf_op) {
+		case BPF_JGE:
+			emit_instr(ctx, sltu, MIPS_R_AT, LO(dst), LO(src));
+			break;
+		case BPF_JLT:
+			emit_instr(ctx, sltu, MIPS_R_AT, LO(dst), LO(src));
+			break;
+		case BPF_JGT:
+			emit_instr(ctx, sltu, MIPS_R_AT, LO(src), LO(dst));
+			break;
+		case BPF_JLE:
+			emit_instr(ctx, sltu, MIPS_R_AT, LO(src), LO(dst));
+			break;
+		}
+
+		src = MIPS_R_AT;
+		dst = MIPS_R_ZERO;
+		goto jeq_common;
+
+	case BPF_JMP | BPF_JEQ | BPF_X: /* JMP_REG */
+	case BPF_JMP | BPF_JNE | BPF_X:
+	case BPF_JMP32 | BPF_JEQ | BPF_X:
+	case BPF_JMP32 | BPF_JNE | BPF_X:
+		src = ebpf_to_mips_reg(ctx, insn, REG_SRC_FP_OK);
+		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_FP_OK);
+		if (src < 0 || dst < 0)
+			return -EINVAL;
+		/*
+		 * Allow pointer comparison with BPF FP as src or dst, using
+		 * T8 as temp reg pair. TODO also for MIPS64
+		 */
+		if (insn->dst_reg == BPF_REG_10) {
+			dst = MIPS_R_T8;
+			emit_instr(ctx, addiu, LO(dst),
+						MIPS_R_SP, ctx->bpf_stack_off);
+			emit_instr(ctx, move, HI(dst), MIPS_R_ZERO);
+		}
+		if (insn->src_reg == BPF_REG_10) {
+			src = MIPS_R_T8;
+			emit_instr(ctx, addiu, LO(src),
+						MIPS_R_SP, ctx->bpf_stack_off);
+			emit_instr(ctx, move, HI(src), MIPS_R_ZERO);
+		}
+
+		cmp_eq = (bpf_op == BPF_JEQ);
+		if (bpf_class == BPF_JMP) {
+			emit_instr(ctx, beq, HI(dst), HI(src), 2 * 4);
+			emit_instr(ctx, move, MIPS_R_AT, LO(src));
+			/* Make low words unequal if high word unequal. */
+			emit_instr(ctx, addu, MIPS_R_AT, LO(dst), MIPS_R_SP);
+			dst = LO(dst);
+			src = MIPS_R_AT;
+		} else { /* BPF_JMP32 */
+			dst = LO(dst);
+			src = LO(src);
+		}
+		goto jeq_common;
+
+	case BPF_JMP | BPF_JSET | BPF_X: /* JMP_REG */
+	case BPF_JMP32 | BPF_JSET | BPF_X:
+		src = ebpf_to_mips_reg(ctx, insn, REG_SRC_NO_FP);
+		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
+		if (src < 0 || dst < 0)
+			return -EINVAL;
+		emit_instr(ctx, and, MIPS_R_AT, LO(dst), LO(src));
+		if (bpf_class == BPF_JMP) {
+			emit_instr(ctx, and, MIPS_R_T8, HI(dst), HI(src));
+			emit_instr(ctx, or, MIPS_R_AT, MIPS_R_AT, MIPS_R_T8);
+		}
+		cmp_eq = false;
+		dst = MIPS_R_AT;
+		src = MIPS_R_ZERO;
 jeq_common:
 		/*
 		 * If the next insn is EXIT and we are jumping arround
@@ -1413,12 +1722,34 @@ jeq_common:
 	case BPF_JMP | BPF_JSGE | BPF_K: /* JMP_IMM */
 	case BPF_JMP | BPF_JSLT | BPF_K: /* JMP_IMM */
 	case BPF_JMP | BPF_JSLE | BPF_K: /* JMP_IMM */
+	case BPF_JMP32 | BPF_JSGT | BPF_K: /* JMP_IMM */
+	case BPF_JMP32 | BPF_JSGE | BPF_K: /* JMP_IMM */
+	case BPF_JMP32 | BPF_JSLT | BPF_K: /* JMP_IMM */
+	case BPF_JMP32 | BPF_JSLE | BPF_K: /* JMP_IMM */
 		cmp_eq = (bpf_op == BPF_JSGE);
-		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_FP_OK);
+		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
 		if (dst < 0)
 			return dst;
 
 		if (insn->imm == 0) {
+			if (bpf_class == BPF_JMP32) {
+				dst = LO(dst);
+			} else { /* BPF_JMP */
+				if (MIPS_ISA_REV >= 6) {
+					emit_instr(ctx, bnez, HI(dst), 3 * 4);
+					emit_instr(ctx, move, MIPS_R_AT, HI(dst));
+					emit_instr(ctx, sltu, MIPS_R_AT,
+							MIPS_R_ZERO, LO(dst));
+					emit_instr(ctx, srl, MIPS_R_AT,
+								MIPS_R_AT, 1);
+				} else {
+					emit_instr(ctx, bnez, HI(dst), 2 * 4);
+					emit_instr(ctx, move, MIPS_R_AT, HI(dst));
+					emit_instr(ctx, sltu, MIPS_R_AT,
+							MIPS_R_ZERO, LO(dst));
+				}
+				dst = MIPS_R_AT;
+			}
 			if ((insn + 1)->code == (BPF_JMP | BPF_EXIT) && insn->off == 1) {
 				b_off = b_imm(exit_idx, ctx);
 				if (is_bad_offset(b_off))
@@ -1464,7 +1795,7 @@ jeq_common:
 		 * only "LT" compare available, so we must use imm + 1
 		 * to generate "GT" and imm -1 to generate LE
 		 */
-		if (bpf_op == BPF_JSGT)
+		if (bpf_op == BPF_JSGT) /* FIXME drop +1, verify imm != 0 */
 			t64s = insn->imm + 1;
 		else if (bpf_op == BPF_JSLE)
 			t64s = insn->imm + 1;
@@ -1472,14 +1803,41 @@ jeq_common:
 			t64s = insn->imm;
 
 		cmp_eq = bpf_op == BPF_JSGT || bpf_op == BPF_JSGE;
+
+
 		if (t64s >= S16_MIN && t64s <= S16_MAX) {
-			emit_instr(ctx, slti, MIPS_R_AT, dst, (int)t64s);
-			src = MIPS_R_AT;
-			dst = MIPS_R_ZERO;
-			goto jeq_common;
+			emit_instr(ctx, addiu, MIPS_R_T8, LO(dst), -t64s);
+		} else {
+			emit_const_to_reg(ctx, MIPS_R_T8, (u64)t64s);
+			emit_instr(ctx, subu, MIPS_R_T8, LO(dst), MIPS_R_T8);
 		}
-		emit_const_to_reg(ctx, MIPS_R_AT, (u64)t64s);
-		emit_instr(ctx, slt, MIPS_R_AT, dst, MIPS_R_AT);
+		emit_instr(ctx, sltu, MIPS_R_AT, LO(dst), MIPS_R_T8);
+		/* sltu sets all bits 1 in R6 ISA i.e. == -1 */
+		if (MIPS_ISA_REV >= 6)
+			emit_instr(ctx, addu, MIPS_R_AT,
+						HI(dst), MIPS_R_AT);
+		else
+			emit_instr(ctx, subu, MIPS_R_AT,
+						HI(dst), MIPS_R_AT);
+		if (t64s < 0)
+			emit_instr(ctx, addiu, MIPS_R_AT, MIPS_R_AT, 1);
+
+		if (MIPS_ISA_REV >= 6) {
+			emit_instr(ctx, bne, MIPS_R_AT, MIPS_R_ZERO, 8);
+			emit_instr(ctx, nop);
+			emit_instr(ctx, move, MIPS_R_AT, MIPS_R_T8);
+		} else {
+			emit_instr(ctx, movz, MIPS_R_AT, MIPS_R_T8, MIPS_R_AT);
+		}
+
+//		if (t64s >= S16_MIN && t64s <= S16_MAX) {
+//			emit_instr(ctx, slti, MIPS_R_AT, dst, (int)t64s);
+//			src = MIPS_R_AT;
+//			dst = MIPS_R_ZERO;
+//			goto jeq_common;
+//		}
+//		emit_const_to_reg(ctx, MIPS_R_AT, (u64)t64s);
+		emit_instr(ctx, slt, MIPS_R_AT, MIPS_R_AT, MIPS_R_ZERO);
 		src = MIPS_R_AT;
 		dst = MIPS_R_ZERO;
 		goto jeq_common;
@@ -1488,53 +1846,87 @@ jeq_common:
 	case BPF_JMP | BPF_JGE | BPF_K:
 	case BPF_JMP | BPF_JLT | BPF_K:
 	case BPF_JMP | BPF_JLE | BPF_K:
-		cmp_eq = (bpf_op == BPF_JGE);
-		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_FP_OK);
+	case BPF_JMP32 | BPF_JGT | BPF_K:
+	case BPF_JMP32 | BPF_JGE | BPF_K:
+	case BPF_JMP32 | BPF_JLT | BPF_K:
+	case BPF_JMP32 | BPF_JLE | BPF_K:
+		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
 		if (dst < 0)
 			return dst;
-		/*
-		 * only "LT" compare available, so we must use imm + 1
-		 * to generate "GT" and imm -1 to generate LE
-		 */
-		if (bpf_op == BPF_JGT)
-			t64s = (u64)(u32)(insn->imm) + 1;
-		else if (bpf_op == BPF_JLE)
-			t64s = (u64)(u32)(insn->imm) + 1;
-		else
-			t64s = (u64)(u32)(insn->imm);
 
 		cmp_eq = bpf_op == BPF_JGT || bpf_op == BPF_JGE;
+		gen_imm_to_reg(insn, MIPS_R_AT, ctx);
+		/* Set T9 on low words equal, if needed */
+		if (bpf_op == BPF_JGT || bpf_op == BPF_JLE) {
+			emit_instr(ctx, bne, LO(dst), MIPS_R_AT, 2 * 4);
+			emit_instr(ctx, move, MIPS_R_T9, MIPS_R_ZERO);
+			emit_instr(ctx, move, MIPS_R_T9, MIPS_R_SP);
+		}
+		/* Set T8 if dst < K */
+		if (bpf_class == BPF_JMP) {
+			t64s = bpf_op == BPF_JGT || bpf_op == BPF_JLE ? 12 : 8;
+			emit_instr(ctx, bnez, HI(dst), t64s);
+			emit_instr(ctx, move, MIPS_R_T8, MIPS_R_ZERO);
+		}
+		emit_instr(ctx, sltu, MIPS_R_T8, LO(dst), MIPS_R_AT);
+		/* Set T8 as dst <= K, if needed */
+		if (bpf_op == BPF_JGT || bpf_op == BPF_JLE)
+			emit_instr(ctx, or, MIPS_R_T8, MIPS_R_T8, MIPS_R_T9);
 
-		emit_const_to_reg(ctx, MIPS_R_AT, (u64)t64s);
-		emit_instr(ctx, sltu, MIPS_R_AT, dst, MIPS_R_AT);
-		src = MIPS_R_AT;
+		src = MIPS_R_T8;
 		dst = MIPS_R_ZERO;
 		goto jeq_common;
 
-	case BPF_JMP | BPF_JSET | BPF_K: /* JMP_IMM */
+	case BPF_JMP | BPF_JEQ | BPF_K: /* JMP_IMM */
+	case BPF_JMP | BPF_JNE | BPF_K: /* JMP_IMM */
+	case BPF_JMP32 | BPF_JEQ | BPF_K: /* JMP_IMM */
+	case BPF_JMP32 | BPF_JNE | BPF_K: /* JMP_IMM */
+		cmp_eq = (bpf_op == BPF_JEQ);
 		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_FP_OK);
 		if (dst < 0)
 			return dst;
-
-		if (ctx->use_bbit_insns && hweight32((u32)insn->imm) == 1) {
-			if ((insn + 1)->code == (BPF_JMP | BPF_EXIT) && insn->off == 1) {
-				b_off = b_imm(exit_idx, ctx);
-				if (is_bad_offset(b_off))
-					return -E2BIG;
-				emit_instr(ctx, bbit0, dst, ffs((u32)insn->imm) - 1, b_off);
-				emit_instr(ctx, nop);
-				return 2; /* We consumed the exit. */
-			}
-			b_off = b_imm(this_idx + insn->off + 1, ctx);
-			if (is_bad_offset(b_off))
-				return -E2BIG;
-			emit_instr(ctx, bbit1, dst, ffs((u32)insn->imm) - 1, b_off);
-			emit_instr(ctx, nop);
-			break;
+		if (insn->dst_reg == BPF_REG_10) {
+			dst = MIPS_R_T8;
+			emit_instr(ctx, addiu, LO(dst),
+						MIPS_R_SP, ctx->bpf_stack_off);
+			emit_instr(ctx, move, HI(dst), MIPS_R_ZERO);
 		}
-		t64 = (u32)insn->imm;
-		emit_const_to_reg(ctx, MIPS_R_AT, t64);
-		emit_instr(ctx, and, MIPS_R_AT, dst, MIPS_R_AT);
+		if (insn->imm == 0) {
+			src = MIPS_R_ZERO;
+			if (bpf_class == BPF_JMP32) {
+				dst = LO(dst);
+			} else { /* BPF_JMP */
+				emit_instr(ctx, or, MIPS_R_AT, LO(dst), HI(dst));
+				dst = MIPS_R_AT;
+			}
+		} else if (bpf_class == BPF_JMP32) {
+			gen_imm_to_reg(insn, MIPS_R_AT, ctx);
+			src = MIPS_R_AT;
+			dst = LO(dst);
+		} else { /* BPF_JMP */
+			gen_imm_to_reg(insn, MIPS_R_AT, ctx);
+			/* If low words equal, check high word vs imm sign. */
+			emit_instr(ctx, beq, LO(dst), MIPS_R_AT, 2 * 4);
+			emit_instr(ctx, nop);
+			/* Make high word signs unequal if low words unequal. */
+			emit_instr(ctx, nor, MIPS_R_AT, MIPS_R_ZERO, HI(dst));
+			emit_instr(ctx, sra, MIPS_R_AT, MIPS_R_AT, 31);
+			src = MIPS_R_AT;
+			dst = HI(dst);
+		}
+		goto jeq_common;
+
+	case BPF_JMP | BPF_JSET | BPF_K: /* JMP_IMM */
+	case BPF_JMP32 | BPF_JSET | BPF_K: /* JMP_IMM */
+		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
+		if (dst < 0)
+			return dst;
+
+		t64u = (u32)insn->imm;
+		gen_imm_to_reg(insn, MIPS_R_AT, ctx);
+		emit_instr(ctx, and, MIPS_R_AT, LO(dst), MIPS_R_AT);
+		if (bpf_class == BPF_JMP && insn->imm < 0)
+			emit_instr(ctx, or, MIPS_R_AT, MIPS_R_AT, HI(dst));
 		src = MIPS_R_AT;
 		dst = MIPS_R_ZERO;
 		cmp_eq = false;
@@ -1560,8 +1952,8 @@ jeq_common:
 		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
 		if (dst < 0)
 			return dst;
-		t64 = ((u64)(u32)insn->imm) | ((u64)(insn + 1)->imm << 32);
-		emit_const_to_reg(ctx, dst, t64);
+		gen_imm_to_reg(insn, LO(dst), ctx);
+		gen_imm_to_reg(insn+1, HI(dst), ctx);
 		return 2; /* Double slot insn */
 
 	case BPF_JMP | BPF_CALL:
@@ -1585,15 +1977,6 @@ jeq_common:
 		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
 		if (dst < 0)
 			return dst;
-		td = get_reg_val_type(ctx, this_idx, insn->dst_reg);
-		if (insn->imm == 64 && td == REG_32BIT)
-			emit_instr(ctx, dinsu, dst, MIPS_R_ZERO, 32, 32);
-
-		if (insn->imm != 64 && td == REG_64BIT) {
-			/* sign extend */
-			emit_instr(ctx, sll, dst, dst, 0);
-		}
-
 #ifdef __BIG_ENDIAN
 		need_swap = (BPF_SRC(insn->code) == BPF_FROM_LE);
 #else
@@ -1601,165 +1984,177 @@ jeq_common:
 #endif
 		if (insn->imm == 16) {
 			if (need_swap)
-				emit_instr(ctx, wsbh, dst, dst);
-			emit_instr(ctx, andi, dst, dst, 0xffff);
+				emit_instr(ctx, wsbh, LO(dst), LO(dst));
+			emit_instr(ctx, andi, LO(dst), LO(dst), 0xffff);
 		} else if (insn->imm == 32) {
 			if (need_swap) {
-				emit_instr(ctx, wsbh, dst, dst);
-				emit_instr(ctx, rotr, dst, dst, 16);
+				emit_instr(ctx, wsbh, LO(dst), LO(dst));
+				emit_instr(ctx, rotr, LO(dst), LO(dst), 16);
 			}
 		} else { /* 64-bit*/
 			if (need_swap) {
-				emit_instr(ctx, dsbh, dst, dst);
-				emit_instr(ctx, dshd, dst, dst);
+				emit_instr(ctx, wsbh, MIPS_R_AT, LO(dst));
+				emit_instr(ctx, wsbh, LO(dst), HI(dst));
+				emit_instr(ctx, rotr, HI(dst), MIPS_R_AT, 16);
+				emit_instr(ctx, rotr, LO(dst), LO(dst), 16);
 			}
 		}
 		break;
 
+	case BPF_ST | BPF_DW | BPF_MEM:
 	case BPF_ST | BPF_B | BPF_MEM:
 	case BPF_ST | BPF_H | BPF_MEM:
 	case BPF_ST | BPF_W | BPF_MEM:
-	case BPF_ST | BPF_DW | BPF_MEM:
-		if (insn->dst_reg == BPF_REG_10) {
-			ctx->flags |= EBPF_SEEN_FP;
-			dst = MIPS_R_SP;
-			mem_off = insn->off + ctx->bpf_stack_off;
-		} else {
-			dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
-			if (dst < 0)
-				return dst;
-			mem_off = insn->off;
-		}
+		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_FP_OK);
+		if (dst < 0)
+			return -EINVAL;
+		mem_off = insn->off;
 		gen_imm_to_reg(insn, MIPS_R_AT, ctx);
+
+		if (insn->dst_reg == BPF_REG_10) {
+			dst = MIPS_R_SP;
+			mem_off += ctx->bpf_stack_off;
+		}
 		switch (BPF_SIZE(insn->code)) {
 		case BPF_B:
-			emit_instr(ctx, sb, MIPS_R_AT, mem_off, dst);
+			emit_instr(ctx, sb, MIPS_R_AT, mem_off, LO(dst));
 			break;
 		case BPF_H:
-			emit_instr(ctx, sh, MIPS_R_AT, mem_off, dst);
+			emit_instr(ctx, sh, MIPS_R_AT, mem_off, LO(dst));
 			break;
 		case BPF_W:
-			emit_instr(ctx, sw, MIPS_R_AT, mem_off, dst);
+			emit_instr(ctx, sw, MIPS_R_AT, mem_off, LO(dst));
 			break;
 		case BPF_DW:
-			emit_instr(ctx, sd, MIPS_R_AT, mem_off, dst);
+			/* Memory order == register order in pair */
+			emit_instr(ctx, sw, MIPS_R_AT, OFFLO(mem_off), LO(dst));
+			if (insn->imm < 0) {
+				emit_instr(ctx, nor, MIPS_R_AT,
+						MIPS_R_ZERO, MIPS_R_ZERO);
+				emit_instr(ctx, sw, MIPS_R_AT,
+						OFFHI(mem_off), LO(dst));
+			} else {
+				emit_instr(ctx, sw, MIPS_R_ZERO,
+						OFFHI(mem_off), LO(dst));
+			}
 			break;
 		}
 		break;
 
+	case BPF_LDX | BPF_DW | BPF_MEM:
 	case BPF_LDX | BPF_B | BPF_MEM:
 	case BPF_LDX | BPF_H | BPF_MEM:
 	case BPF_LDX | BPF_W | BPF_MEM:
-	case BPF_LDX | BPF_DW | BPF_MEM:
-		if (insn->src_reg == BPF_REG_10) {
-			ctx->flags |= EBPF_SEEN_FP;
-			src = MIPS_R_SP;
-			mem_off = insn->off + ctx->bpf_stack_off;
-		} else {
-			src = ebpf_to_mips_reg(ctx, insn, REG_SRC_NO_FP);
-			if (src < 0)
-				return src;
-			mem_off = insn->off;
-		}
 		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
-		if (dst < 0)
-			return dst;
+		src = ebpf_to_mips_reg(ctx, insn, REG_SRC_FP_OK);
+		if (src < 0 || dst < 0)
+			return -EINVAL;
+		mem_off = insn->off;
+
+		if (insn->src_reg == BPF_REG_10) {
+			src = MIPS_R_SP;
+			mem_off += ctx->bpf_stack_off;
+		}
 		switch (BPF_SIZE(insn->code)) {
 		case BPF_B:
-			emit_instr(ctx, lbu, dst, mem_off, src);
+			emit_instr(ctx, lbu, LO(dst), mem_off, LO(src));
 			break;
 		case BPF_H:
-			emit_instr(ctx, lhu, dst, mem_off, src);
+			emit_instr(ctx, lhu, LO(dst), mem_off, LO(src));
 			break;
 		case BPF_W:
-			emit_instr(ctx, lw, dst, mem_off, src);
+			emit_instr(ctx, lw, LO(dst), mem_off, LO(src));
 			break;
 		case BPF_DW:
-			emit_instr(ctx, ld, dst, mem_off, src);
+			/*
+			 * Careful: update HI(dst) first in case dst == src,
+			 * since only LO(src) is the usable pointer.
+			 */
+			emit_instr(ctx, lw, HI(dst), OFFHI(mem_off), LO(src));
+			emit_instr(ctx, lw, LO(dst), OFFLO(mem_off), LO(src));
 			break;
 		}
 		break;
 
+	case BPF_STX | BPF_DW | BPF_XADD:
+		UNSUPPORTED;
+	case BPF_STX | BPF_W | BPF_XADD:
+		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_FP_OK);
+		src = ebpf_to_mips_reg(ctx, insn, REG_SRC_FP_OK);
+		if (src < 0 || dst < 0)
+			return -EINVAL;
+		mem_off = insn->off;
+		/*
+		 * Drop reg pair scheme for more efficient temp register usage
+		 * given BPF_W mode.
+		 */
+		dst = LO(dst);
+		src = LO(src);
+
+		if (insn->dst_reg == BPF_REG_10) {
+			dst = MIPS_R_SP;
+			mem_off += ctx->bpf_stack_off;
+		}
+		if (insn->src_reg == BPF_REG_10) { /* TODO also for MIPS64*/
+			src = MIPS_R_T8;
+			emit_instr(ctx, addiu, src,
+						MIPS_R_SP, ctx->bpf_stack_off);
+		}
+		/*
+		 * If mem_off does not fit within the 9 bit ll/sc instruction
+		 * immediate field, use a temp reg.
+		 */
+		if (MIPS_ISA_REV >= 6 &&
+		    (mem_off >= BIT(8) || mem_off < -BIT(8))) {
+			emit_instr(ctx, addiu, MIPS_R_T9, dst, mem_off);
+			mem_off = 0;
+			dst = MIPS_R_T9;
+		}
+		emit_instr(ctx, ll, MIPS_R_AT, mem_off, dst);
+		emit_instr(ctx, addu, MIPS_R_AT, MIPS_R_AT, src);
+		emit_instr(ctx, sc, MIPS_R_AT, mem_off, dst);
+		/*
+		 * On failure back up to LL (-4 insns of 4 bytes each)
+		 */
+		emit_instr(ctx, beqz, MIPS_R_AT, -4 * 4);
+		emit_instr(ctx, nop);
+		break;
+
+	case BPF_STX | BPF_DW | BPF_MEM:
 	case BPF_STX | BPF_B | BPF_MEM:
 	case BPF_STX | BPF_H | BPF_MEM:
 	case BPF_STX | BPF_W | BPF_MEM:
-	case BPF_STX | BPF_DW | BPF_MEM:
-	case BPF_STX | BPF_W | BPF_XADD:
-	case BPF_STX | BPF_DW | BPF_XADD:
+		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_FP_OK);
+		src = ebpf_to_mips_reg(ctx, insn, REG_SRC_FP_OK);
+		if (src < 0 || dst < 0)
+			return -EINVAL;
+		mem_off = insn->off;
+
 		if (insn->dst_reg == BPF_REG_10) {
-			ctx->flags |= EBPF_SEEN_FP;
 			dst = MIPS_R_SP;
-			mem_off = insn->off + ctx->bpf_stack_off;
-		} else {
-			dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
-			if (dst < 0)
-				return dst;
-			mem_off = insn->off;
+			mem_off += ctx->bpf_stack_off;
 		}
-		src = ebpf_to_mips_reg(ctx, insn, REG_SRC_NO_FP);
-		if (src < 0)
-			return src;
-		if (BPF_MODE(insn->code) == BPF_XADD) {
-			/*
-			 * If mem_off does not fit within the 9 bit ll/sc
-			 * instruction immediate field, use a temp reg.
-			 */
-			if (MIPS_ISA_REV >= 6 &&
-			    (mem_off >= BIT(8) || mem_off < -BIT(8))) {
-				emit_instr(ctx, daddiu, MIPS_R_T6,
-						dst, mem_off);
-				mem_off = 0;
-				dst = MIPS_R_T6;
-			}
-			switch (BPF_SIZE(insn->code)) {
-			case BPF_W:
-				if (get_reg_val_type(ctx, this_idx, insn->src_reg) == REG_32BIT) {
-					emit_instr(ctx, sll, MIPS_R_AT, src, 0);
-					src = MIPS_R_AT;
-				}
-				emit_instr(ctx, ll, MIPS_R_T8, mem_off, dst);
-				emit_instr(ctx, addu, MIPS_R_T8, MIPS_R_T8, src);
-				emit_instr(ctx, sc, MIPS_R_T8, mem_off, dst);
-				/*
-				 * On failure back up to LL (-4
-				 * instructions of 4 bytes each
-				 */
-				emit_instr(ctx, beq, MIPS_R_T8, MIPS_R_ZERO, -4 * 4);
-				emit_instr(ctx, nop);
-				break;
-			case BPF_DW:
-				if (get_reg_val_type(ctx, this_idx, insn->src_reg) == REG_32BIT) {
-					emit_instr(ctx, daddu, MIPS_R_AT, src, MIPS_R_ZERO);
-					emit_instr(ctx, dinsu, MIPS_R_AT, MIPS_R_ZERO, 32, 32);
-					src = MIPS_R_AT;
-				}
-				emit_instr(ctx, lld, MIPS_R_T8, mem_off, dst);
-				emit_instr(ctx, daddu, MIPS_R_T8, MIPS_R_T8, src);
-				emit_instr(ctx, scd, MIPS_R_T8, mem_off, dst);
-				emit_instr(ctx, beq, MIPS_R_T8, MIPS_R_ZERO, -4 * 4);
-				emit_instr(ctx, nop);
-				break;
-			}
-		} else { /* BPF_MEM */
-			switch (BPF_SIZE(insn->code)) {
-			case BPF_B:
-				emit_instr(ctx, sb, src, mem_off, dst);
-				break;
-			case BPF_H:
-				emit_instr(ctx, sh, src, mem_off, dst);
-				break;
-			case BPF_W:
-				emit_instr(ctx, sw, src, mem_off, dst);
-				break;
-			case BPF_DW:
-				if (get_reg_val_type(ctx, this_idx, insn->src_reg) == REG_32BIT) {
-					emit_instr(ctx, daddu, MIPS_R_AT, src, MIPS_R_ZERO);
-					emit_instr(ctx, dinsu, MIPS_R_AT, MIPS_R_ZERO, 32, 32);
-					src = MIPS_R_AT;
-				}
-				emit_instr(ctx, sd, src, mem_off, dst);
-				break;
-			}
+		/* Use temp T8 reg pair to hold BPF FP if src. */
+		if (insn->src_reg == BPF_REG_10) { /* TODO also for MIPS64*/
+			src = MIPS_R_T8;
+			emit_instr(ctx, addiu, LO(src),
+						MIPS_R_SP, ctx->bpf_stack_off);
+			emit_instr(ctx, move, HI(src), MIPS_R_ZERO);
+		}
+		switch (BPF_SIZE(insn->code)) {
+		case BPF_B:
+			emit_instr(ctx, sb, LO(src), mem_off, LO(dst));
+			break;
+		case BPF_H:
+			emit_instr(ctx, sh, LO(src), mem_off, LO(dst));
+			break;
+		case BPF_W:
+			emit_instr(ctx, sw, LO(src), mem_off, LO(dst));
+			break;
+		case BPF_DW:
+			emit_instr(ctx, sw, LO(src), OFFLO(mem_off), LO(dst));
+			emit_instr(ctx, sw, HI(src), OFFHI(mem_off), LO(dst));
+			break;
 		}
 		break;
 
@@ -1768,6 +2163,13 @@ jeq_common:
 		       this_idx, (unsigned int)insn->code);
 		return -EINVAL;
 	}
+	/*
+	 * Handle zero-extension if the verifier is unable to patch and
+	 * insert it's own special zext insns.
+	 */
+	if ((bpf_class == BPF_ALU && !(bpf_op == BPF_END && insn->imm == 64)) ||
+	    (bpf_class == BPF_LDX && bpf_size != BPF_DW))
+		gen_zext_insn(dst, false, ctx);
 	return 1;
 }
 
