@@ -32,7 +32,9 @@ CFLAGS += -g -rdynamic -Wall -O2 $(GENFLAGS) $(SAN_CFLAGS)		\
 LDLIBS += -lcap -lelf -lz -lrt -lpthread
 
 # Order correspond to 'make run_tests' order
-TEST_GEN_PROGS = test_verifier test_progs
+LITTLE_ENDIAN = $(shell $(CC) -dM -E - </dev/null | \
+			grep 'define __BYTE_ORDER__ __ORDER_LITTLE_ENDIAN__')
+TEST_GEN_PROGS = test_verifier #$(if $(LITTLE_ENDIAN),test_progs)
 
 # Also test bpf-gcc, if present
 ifneq ($(BPF_GCC),)
@@ -74,8 +76,8 @@ TEST_PROGS_EXTENDED := with_addr.sh \
 
 # Compile but not part of 'make run_tests'
 TEST_GEN_PROGS_EXTENDED = test_sock_addr test_skb_cgroup_id_user \
-	flow_dissector_load test_flow_dissector test_tcp_check_syncookie_user \
-	test_lirc_mode2_user xdping test_cpp runqslower bench
+	test_tcp_check_syncookie_user \
+	test_lirc_mode2_user xdping runqslower bench
 
 TEST_CUSTOM_PROGS = urandom_read
 
@@ -242,13 +244,15 @@ endef
 IS_LITTLE_ENDIAN = $(shell $(CC) -dM -E - </dev/null | \
 			grep 'define __BYTE_ORDER__ __ORDER_LITTLE_ENDIAN__')
 MENDIAN=$(if $(IS_LITTLE_ENDIAN),-mlittle-endian,-mbig-endian)
+MIPSDEF=$(if $(IS_LITTLE_ENDIAN),__MIPSEL__,__MIPSEB__)
 
 CLANG_SYS_INCLUDES = $(call get_sys_includes,$(CLANG))
 BPF_CFLAGS = -g -D__TARGET_ARCH_$(SRCARCH) $(MENDIAN) 			\
 	     -I$(INCLUDE_DIR) -I$(CURDIR) -I$(APIDIR)			\
-	     -D__MIPSEB__ -D_MIPS_SIM=_MIPS_SIM_ABI32			\
-	     -I$(TOOLCHAIN_INCLUDE)					\
+	     -D$(MIPSDEF) -D_MIPS_SIM=_MIPS_SIM_ABI32			\
 	     -I$(abspath $(OUTPUT)/../usr/include)
+
+#	     -I$(TOOLCHAIN_INCLUDE)					\
 
 CLANG_CFLAGS = $(CLANG_SYS_INCLUDES) \
 	       -Wno-compare-distinct-pointer-types
@@ -263,18 +267,20 @@ $(OUTPUT)/flow_dissector_load.o: flow_dissector_load.h
 # $2 - output .o file
 # $3 - CFLAGS
 # $4 - LDFLAGS
+BPFARCH=$(if $(IS_LITTLE_ENDIAN),bpfel,bpfeb)
+
 define CLANG_BPF_BUILD_RULE
 	$(call msg,CLNG-LLC,$(TRUNNER_BINARY),$2)
-	$(Q)($(CLANG) $3 -O2 -target bpfeb -emit-llvm			\
+	$(Q)($(CLANG) $3 -O2 -target $(BPFARCH) -emit-llvm			\
 		-c $1 -o - || echo "BPF obj compilation failed") | 	\
-	$(LLC) -mattr=dwarfris -march=bpfeb -mcpu=v3 $4 -filetype=obj -o $2
+	$(LLC) -mattr=dwarfris -march=$(BPFARCH) -mcpu=v3 $4 -filetype=obj -o $2
 endef
 # Similar to CLANG_BPF_BUILD_RULE, but with disabled alu32
 define CLANG_NOALU32_BPF_BUILD_RULE
 	$(call msg,CLNG-LLC,$(TRUNNER_BINARY),$2)
-	$(Q)($(CLANG) $3 -O2 -target bpfeb -emit-llvm			\
+	$(Q)($(CLANG) $3 -O2 -target $(BPFARCH) -emit-llvm		\
 		-c $1 -o - || echo "BPF obj compilation failed") | 	\
-	$(LLC) -march=bpfeb -mcpu=v2 $4 -filetype=obj -o $2
+	$(LLC) -march=$(BPFARCH) -mcpu=v2 $4 -filetype=obj -o $2
 endef
 # Similar to CLANG_BPF_BUILD_RULE, but using native Clang and bpf LLC
 define CLANG_NATIVE_BPF_BUILD_RULE
