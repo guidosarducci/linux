@@ -10,7 +10,7 @@
 #include <sched.h>
 #include <signal.h>
 #include <string.h>
-#include <execinfo.h> /* backtrace */
+//#include <execinfo.h> /* backtrace */
 
 #define EXIT_NO_TEST		2
 #define EXIT_ERR_SETUP_INFRA	3
@@ -628,9 +628,9 @@ int cd_flavor_subdir(const char *exec_name)
 void crash_handler(int signum)
 {
 	void *bt[MAX_BACKTRACE_SZ];
-	size_t sz;
+//	size_t sz;
 
-	sz = backtrace(bt, ARRAY_SIZE(bt));
+//	sz = backtrace(bt, ARRAY_SIZE(bt));
 
 	if (env.test)
 		dump_test_log(env.test, true);
@@ -638,7 +638,7 @@ void crash_handler(int signum)
 		stdio_restore();
 
 	fprintf(stderr, "Caught signal #%d!\nStack trace:\n", signum);
-	backtrace_symbols_fd(bt, sz, STDERR_FILENO);
+//	backtrace_symbols_fd(bt, sz, STDERR_FILENO);
 }
 
 int main(int argc, char **argv)
