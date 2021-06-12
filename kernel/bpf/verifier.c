@@ -558,8 +558,17 @@ static struct bpf_func_state *func(struct bpf_verifier_env *env,
 
 const char *kernel_type_name(u32 id)
 {
+	const struct btf_type *tmp = btf_type_by_id(btf_vmlinux, id);
+	int i;
+
+	if (tmp == NULL) {
+		pr_err("btf_type_by_id(btf_vmlinux, %u) returns NULL\n", id);
+		for (i = 0; i < MAX_BTF_SOCK_TYPE; i++)
+			pr_err("btf_sock_ids[%d] = %u\n", i, btf_sock_ids[i]);
+		return NULL;
+	}
 	return btf_name_by_offset(btf_vmlinux,
-				  btf_type_by_id(btf_vmlinux, id)->name_off);
+				  tmp->name_off);
 }
 
 static void print_verifier_state(struct bpf_verifier_env *env,
