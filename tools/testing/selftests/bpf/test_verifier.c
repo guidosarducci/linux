@@ -978,7 +978,7 @@ static void do_test_single(struct bpf_test *test, bool unpriv,
 	attr.insns_cnt = prog_len;
 	attr.license = "GPL";
 	if (verbose)
-		attr.log_level = 1;
+		attr.log_level = 3;
 	else if (expected_ret == VERBOSE_ACCEPT)
 		attr.log_level = 2;
 	else
