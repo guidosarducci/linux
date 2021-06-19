@@ -431,14 +431,15 @@ static void jit_fill_hole(void *area, unsigned int size)
 		uasm_i_break(&p, BRK_BUG); /* Increments p */
 }
 
+/* Stack region alignment under N64 and O32 ABIs */
+#define STACK_ALIGN (2 * sizeof(long))
+
 /*
  * Under MIPS32 O32 ABI calling convention, u64 BPF regs R1-R2 are passed
  * via reg pairs in $a0-$a3, while BPF regs R3-R5 are passed via the stack.
- * Stack space is always reserved for $a0-$a3, with the whole area aligned
- * to double-word.
+ * Stack space is still reserved for $a0-$a3, and the whole area aligned.
  */
-#define ARGS_RESV_SIZE (2 * sizeof(u64))
-#define ARGS_SIZE ALIGN(5 * sizeof(u64), 8)
+#define ARGS_SIZE (5 * sizeof(u64))
 
 /*
  * Push BPF regs R3-R5 to the stack, skipping BPF regs R1-R2 which are
@@ -448,16 +449,15 @@ static void jit_fill_hole(void *area, unsigned int size)
 
 void emit_push_args(struct jit_ctx *ctx)
 {
-	int store_offset = ARGS_RESV_SIZE;
+	int store_offset = 2 * sizeof(u64); /* Skip R1-R2 in $a0-$a3 */
 	int bpf, reg;
 
 	for (bpf = BPF_REG_3; bpf <= BPF_REG_5; bpf++) {
 		reg = bpf2mips[bpf].reg;
 
-		emit_instr(ctx, sw, reg, store_offset, MIPS_R_SP);
-		store_offset += sizeof(long); reg++;
-		emit_instr(ctx, sw, reg, store_offset, MIPS_R_SP);
-		store_offset += sizeof(long);
+		emit_instr(ctx, sw, LO(reg), OFFLO(store_offset), MIPS_R_SP);
+		emit_instr(ctx, sw, HI(reg), OFFHI(store_offset), MIPS_R_SP);
+		store_offset += sizeof(u64);
 	}
 }
 
@@ -502,7 +502,7 @@ void emit_push_args(struct jit_ctx *ctx)
  * If BPF_REG_10 is never referenced, then the MAX_BPF_STACK sized
  * area is not allocated.
  */
-static int gen_int_prologue(struct jit_ctx *ctx)
+static int build_int_prologue(struct jit_ctx *ctx)
 {
 	int tcc_reg = bpf2mips[JIT_REG_TCC].reg;
 	int tcc_sav = bpf2mips[JIT_SAV_TCC].reg;
@@ -537,9 +537,14 @@ static int gen_int_prologue(struct jit_ctx *ctx)
 	if (ctx->flags & EBPF_SAVE_S0)
 		stack_adjust += sizeof(long);
 
+	stack_adjust = ALIGN(stack_adjust, STACK_ALIGN);
+
 	BUILD_BUG_ON(MAX_BPF_STACK & 7);
 	locals_size = (ctx->flags & EBPF_SEEN_FP) ? MAX_BPF_STACK : 0;
+	locals_size = ALIGN(locals_size, STACK_ALIGN);
+
 	args_size = !is64bit() && (ctx->flags & EBPF_SAVE_RA) ? ARGS_SIZE : 0;
+	args_size = ALIGN(args_size, STACK_ALIGN);
 
 	stack_adjust += args_size + locals_size;
 
@@ -929,7 +934,7 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 		ctx.idx = 0;
 		ctx.gen_b_offsets = 1;
 		ctx.long_b_conversion = 0;
-		if (gen_int_prologue(&ctx))
+		if (build_int_prologue(&ctx))
 			goto out_err;
 		if (build_int_body(&ctx))
 			goto out_err;
@@ -948,7 +953,7 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 
 	/* Third pass generates the code */
 	ctx.idx = 0;
-	if (gen_int_prologue(&ctx))
+	if (build_int_prologue(&ctx))
 		goto out_err;
 	if (build_int_body(&ctx))
 		goto out_err;
