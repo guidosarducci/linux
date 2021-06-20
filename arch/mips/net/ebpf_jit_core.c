@@ -447,14 +447,40 @@ static void jit_fill_hole(void *area, unsigned int size)
  * and the memory storage order are identical i.e. endian native.
  */
 
-void emit_push_args(struct jit_ctx *ctx)
+void emit_push_args(struct jit_ctx *ctx, const struct bpf_insn *insn)
 {
 	int store_offset = 2 * sizeof(u64); /* Skip R1-R2 in $a0-$a3 */
-	int bpf, reg;
+	int bpf_class = BPF_CLASS(insn->code);
+	int bpf_op = BPF_OP(insn->code);
+	const struct bpf_func_proto *fp;
+	int bpf;
 
+	/*
+	 * Args needed only for kernel helper calls under O32 ABI, since
+	 * BPF2BPF calls have args already set up.
+	 */
+	if (is64bit() || bpf_class != BPF_JMP || bpf_op != BPF_CALL)
+		return;
+	if (insn->src_reg != 0)
+		return;
+
+	/*
+	 * Push only required args based on the func prototype, to avoid
+	 * passing unused/invalid registers, which can confuse debugging.
+	 */
+	fp = bpf_base_func_proto(insn->imm);
+	pr_err("fp = %u, insn->imm = %u\n",
+		       (unsigned int)fp, (unsigned int)insn->code);
+	if (fp)
+		pr_err("fp->arg_type[0..4] = %u, %u, %u, %u, %u\n",
+			fp->arg_type[0], fp->arg_type[1], fp->arg_type[2],
+			fp->arg_type[3], fp->arg_type[4]);
 	for (bpf = BPF_REG_3; bpf <= BPF_REG_5; bpf++) {
-		reg = bpf2mips[bpf].reg;
+		int reg = bpf2mips[bpf].reg;
+		int narg = bpf - 1;
 
+		if (fp && fp->arg_type[narg] == ARG_DONTCARE)
+			break;
 		emit_instr(ctx, sw, LO(reg), OFFLO(store_offset), MIPS_R_SP);
 		emit_instr(ctx, sw, HI(reg), OFFHI(store_offset), MIPS_R_SP);
 		store_offset += sizeof(u64);

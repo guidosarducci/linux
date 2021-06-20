@@ -1093,7 +1093,7 @@ jeq_common:
 
 	case BPF_JMP | BPF_CALL:
 		ctx->flags |= EBPF_SAVE_RA;
-		emit_push_args(ctx);
+		emit_push_args(ctx, insn);
 		t64s = (s64)insn->imm + (long)__bpf_call_base;
 		emit_const_to_reg(ctx, MIPS_R_T9, (u64)t64s);
 		emit_instr(ctx, jalr, MIPS_R_RA, MIPS_R_T9);
