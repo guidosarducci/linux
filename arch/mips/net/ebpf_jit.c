@@ -900,6 +900,27 @@ static int emit_bpf_tail_call(struct jit_ctx *ctx, int this_idx)
 	return build_int_epilogue(ctx, MIPS_R_T9);
 }
 
+/*
+ * Push BPF regs R3-R5 to the stack, skipping BPF regs R1-R2 which are
+ * passed via MIPS register pairs in $a0-$a3. Register order within pairs
+ * and the memory storage order are identical i.e. endian native.
+ */
+
+static void emit_push_args(struct jit_ctx *ctx)
+{
+	int store_offset = ARGS_RESV_SIZE;
+	int bpf, reg;
+
+	for (bpf = BPF_REG_3; bpf <= BPF_REG_5; bpf++) {
+		reg = bpf2mips[bpf].reg;
+
+		emit_instr(ctx, sw, reg, store_offset, MIPS_R_SP);
+		store_offset += sizeof(long); reg++;
+		emit_instr(ctx, sw, reg, store_offset, MIPS_R_SP);
+		store_offset += sizeof(long);
+	}
+}
+
 static bool is_bad_offset(int b_off)
 {
 	return b_off > 0x1ffff || b_off < -0x20000;
@@ -1560,6 +1581,8 @@ jeq_common:
 
 	case BPF_JMP | BPF_CALL:
 		ctx->flags |= EBPF_SAVE_RA;
+		if (!is64bit())
+			emit_push_args(ctx);
 		t64s = (s64)insn->imm + (long)__bpf_call_base;
 		emit_const_to_reg(ctx, MIPS_R_T9, (u64)t64s);
 		emit_instr(ctx, jalr, MIPS_R_RA, MIPS_R_T9);
