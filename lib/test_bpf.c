@@ -425,9 +425,13 @@ static int bpf_fill_ld_abs_get_processor_id(struct bpf_test *self)
 	return 0;
 }
 
+static int test_len = BPF_MAXINSNS;
+module_param(test_len, int, 0);
+
 static int __bpf_fill_stxdw(struct bpf_test *self, int size)
 {
-	unsigned int len = BPF_MAXINSNS;
+//	unsigned int len = BPF_MAXINSNS;
+	unsigned int len = test_len;
 	struct bpf_insn *insn;
 	int i;
 
