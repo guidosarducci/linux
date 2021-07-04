@@ -287,6 +287,10 @@ extern void emit_bpf_call(struct jit_ctx *ctx, const struct bpf_insn *insn);
 
 extern int emit_bpf_tail_call(struct jit_ctx *ctx, int this_idx);
 
+extern void emit_caller_save(struct jit_ctx *ctx);
+
+extern void emit_caller_restore(struct jit_ctx *ctx, int bpf_ret);
+
 extern int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 		   int this_idx, int exit_idx);
 

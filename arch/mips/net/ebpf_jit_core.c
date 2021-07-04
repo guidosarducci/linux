@@ -896,6 +896,60 @@ int emit_bpf_tail_call(struct jit_ctx *ctx, int this_idx)
 	return build_int_epilogue(ctx, MIPS_R_T9);
 }
 
+/*
+ * Save and restore the BPF VM state across a direct kernel call. This
+ * includes the caller-saved registers used for BPF_REG_0 .. BPF_REG_5.
+ * Restore avoids clobbering bpf_ret, which holds the call return value.
+ * BPF_REG_6 .. BPF_REG_10 and TCC are already callee-saved or on stack.
+ */
+#define CALLER_ENV_SIZE (6 * sizeof(u64))
+
+void emit_caller_save(struct jit_ctx *ctx)
+{
+	int stack_adj = ALIGN(CALLER_ENV_SIZE, STACK_ALIGN);
+	int bpf, reg, store_offset;
+
+	emit_instr_long(ctx, daddiu, addiu, MIPS_R_SP, MIPS_R_SP, -stack_adj);
+
+	for (bpf = BPF_REG_0; bpf <= BPF_REG_5; bpf++) {
+		reg = bpf2mips[bpf].reg;
+		store_offset = bpf * sizeof(u64);
+
+		if (is64bit()) {
+			emit_instr(ctx, sd, reg, store_offset, MIPS_R_SP);
+		} else {
+			emit_instr(ctx, sw, LO(reg),
+						OFFLO(store_offset), MIPS_R_SP);
+			emit_instr(ctx, sw, HI(reg),
+						OFFHI(store_offset), MIPS_R_SP);
+		}
+	}
+}
+
+void emit_caller_restore(struct jit_ctx *ctx, int bpf_ret)
+{
+	int stack_adj = ALIGN(CALLER_ENV_SIZE, STACK_ALIGN);
+	int bpf, reg, store_offset;
+
+	for (bpf = BPF_REG_0; bpf <= BPF_REG_5; bpf++) {
+		reg = bpf2mips[bpf].reg;
+		store_offset = bpf * sizeof(u64);
+		if (bpf == bpf_ret)
+			continue;
+
+		if (is64bit()) {
+			emit_instr(ctx, ld, reg, store_offset, MIPS_R_SP);
+		} else {
+			emit_instr(ctx, lw, LO(reg),
+						OFFLO(store_offset), MIPS_R_SP);
+			emit_instr(ctx, lw, HI(reg),
+						OFFHI(store_offset), MIPS_R_SP);
+		}
+	}
+
+	emit_instr_long(ctx, daddiu, addiu, MIPS_R_SP, MIPS_R_SP, stack_adj);
+}
+
 struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 {
 	struct bpf_prog *orig_prog = prog;
