@@ -18,6 +18,151 @@
 
 #include "ebpf_jit.h"
 
+/*
+ * Implement 64-bit BPF div/mod insns on 32-bit systems by calling the
+ * equivalent built-in kernel function. The function args may be mixed
+ * 64/32-bit types, unlike the uniform u64 args of BPF kernel helpers.
+ * Func proto: u64 div64_u64_rem(u64 dividend, u64 divisor, u64 *remainder)
+ */
+static int emit_bpf_divmod64(struct jit_ctx *ctx, const struct bpf_insn *insn)
+{
+	const int bpf_src = BPF_SRC(insn->code);
+	const int bpf_op = BPF_OP(insn->code);
+	int rem_off, arg_off;
+	int src, dst, tmp;
+	u32 func_addr;
+
+	ctx->flags |= EBPF_SAVE_RA;
+
+	dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
+	if (dst < 0)
+		return -EINVAL;
+
+	if (bpf_src == BPF_X) {
+		src = ebpf_to_mips_reg(ctx, insn, REG_SRC_FP_OK);
+		if (src < 0)
+			return -EINVAL;
+		/*
+		 * Use MIPS_R_T8 as temp reg pair to avoid target
+		 * of dst from clobbering src.
+		 */
+		if (src == MIPS_R_A0) {
+			tmp = MIPS_R_T8;
+			emit_instr(ctx, move, LO(tmp), LO(src));
+			emit_instr(ctx, move, HI(tmp), HI(src));
+			src = tmp;
+		}
+	}
+
+	/* Save caller registers */
+	emit_caller_save(ctx);
+	/* Push O32 stack, aligned space for u64, u64, u64 *, u64 */
+	emit_instr(ctx, addiu, MIPS_R_SP, MIPS_R_SP, -32);
+
+	func_addr = (u32) &div64_u64_rem;
+	/* Move u64 dst to arg 1 as needed */
+	if (dst != MIPS_R_A0) {
+		emit_instr(ctx, move, LO(MIPS_R_A0), LO(dst));
+		emit_instr(ctx, move, HI(MIPS_R_A0), HI(dst));
+	}
+	/* Load imm or move u64 src to arg 2 as needed */
+	if (bpf_src == BPF_K) {
+		gen_imm_to_reg(insn, LO(MIPS_R_A2), ctx);
+		gen_signext_insn(MIPS_R_A2, ctx);
+	} else if (src != MIPS_R_A2) { /* BPF_X */
+		emit_instr(ctx, move, LO(MIPS_R_A2), LO(src));
+		emit_instr(ctx, move, HI(MIPS_R_A2), HI(src));
+	}
+	/* Set up stack arg 3 as ptr to u64 remainder on stack */
+	arg_off = 16;
+	rem_off = 24;
+	emit_instr(ctx, addiu, MIPS_R_AT, MIPS_R_SP, rem_off);
+	emit_instr(ctx, sw, MIPS_R_AT, arg_off, MIPS_R_SP);
+
+	emit_const_to_reg(ctx, MIPS_R_T9, func_addr);
+	emit_instr(ctx, jalr, MIPS_R_RA, MIPS_R_T9);
+	/* Delay slot */
+	emit_instr(ctx, nop);
+
+	/* Move return value to dst as needed */
+	switch (bpf_op) {
+	case BPF_DIV:
+		/* Quotient in MIPS_R_V0 reg pair */
+		if (dst != MIPS_R_V0) {
+			emit_instr(ctx, move, LO(dst), LO(MIPS_R_V0));
+			emit_instr(ctx, move, HI(dst), HI(MIPS_R_V0));
+		}
+		break;
+	case BPF_MOD:
+		/* Remainder on stack */
+		emit_instr(ctx, lw, LO(dst), OFFLO(rem_off), MIPS_R_SP);
+		emit_instr(ctx, lw, HI(dst), OFFHI(rem_off), MIPS_R_SP);
+		break;
+	}
+
+	/* Pop O32 call stack */
+	emit_instr(ctx, addiu, MIPS_R_SP, MIPS_R_SP, 32);
+	/* Restore all caller registers except call return value*/
+	emit_caller_restore(ctx, insn->dst_reg);
+
+	return 0;
+}
+
+/*
+ * Implement 64-bit BPF atomic insns on 32-bit systems by calling the
+ * equivalent built-in kernel function. The function args may be mixed
+ * 64/32-bit types, unlike the uniform u64 args of BPF kernel helpers.
+ * Func proto: void atomic64_add(s64 a, atomic64_t *v)
+ */
+static int emit_bpf_atomic64(struct jit_ctx *ctx, const struct bpf_insn *insn)
+{
+//	const int bpf_class = BPF_CLASS(insn->code);
+//	const int bpf_size = BPF_SIZE(insn->code);
+//	const int bpf_src = BPF_SRC(insn->code);
+//	const int bpf_op = BPF_OP(insn->code);
+	int src, dst, mem_off;
+	u32 func_addr;
+
+	ctx->flags |= EBPF_SAVE_RA;
+
+	dst = ebpf_to_mips_reg(ctx, insn, REG_DST_FP_OK);
+	src = ebpf_to_mips_reg(ctx, insn, REG_SRC_FP_OK);
+	if (src < 0 || dst < 0)
+		return -EINVAL;
+	mem_off = insn->off;
+
+	/* Save caller registers */
+	emit_caller_save(ctx);
+
+	switch (insn->code) {
+	case BPF_STX | BPF_DW | BPF_XADD:
+		func_addr = (u32) &atomic64_add;
+		/* Move s64 src to arg 1 as needed */
+		if (src != MIPS_R_A0) {
+			emit_instr(ctx, move, LO(MIPS_R_A0), LO(src));
+			emit_instr(ctx, move, HI(MIPS_R_A0), HI(src));
+		}
+		/* Set up dst ptr in arg 2 base register*/
+		emit_instr(ctx, addiu, MIPS_R_A2, LO(dst), mem_off);
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	emit_const_to_reg(ctx, MIPS_R_T9, func_addr);
+	emit_instr(ctx, jalr, MIPS_R_RA, MIPS_R_T9);
+	/* Delay slot */
+	/* Push minimal O32 stack */
+	emit_instr(ctx, addiu, MIPS_R_SP, MIPS_R_SP, -16);
+
+	/* Pop minimal O32 stack */
+	emit_instr(ctx, addiu, MIPS_R_SP, MIPS_R_SP, 16);
+	/* Restore all caller registers since none clobbered by call */
+	emit_caller_restore(ctx, BPF_REG_FP);
+
+	return 0;
+}
+
 static int gen_imm_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 			int idx)
 {
@@ -430,7 +575,10 @@ int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 		break;
 	case BPF_ALU64 | BPF_DIV | BPF_X: /* ALU64_REG */
 	case BPF_ALU64 | BPF_MOD | BPF_X: /* ALU64_REG */
-		return -EINVAL;
+		r = emit_bpf_divmod64(ctx, insn);
+		if (r < 0)
+			return r;
+		break;
 	case BPF_ALU64 | BPF_MUL | BPF_X: /* ALU64_REG */
 	case BPF_ALU64 | BPF_ADD | BPF_X: /* ALU64_REG */
 	case BPF_ALU64 | BPF_SUB | BPF_X: /* ALU64_REG */
@@ -1087,7 +1235,10 @@ jeq_common:
 		break;
 
 	case BPF_STX | BPF_DW | BPF_XADD:
-		return -EINVAL;
+		r = emit_bpf_atomic64(ctx, insn);
+		if (r < 0)
+			return r;
+		break;
 	case BPF_STX | BPF_W | BPF_XADD:
 		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_FP_OK);
 		src = ebpf_to_mips_reg(ctx, insn, REG_SRC_FP_OK);
