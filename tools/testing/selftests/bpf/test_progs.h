@@ -70,10 +70,9 @@ struct test_env {
 	bool list_test_names;
 
 	struct prog_test_def *test;
-	FILE *stdout;
-	FILE *stderr;
 	char *log_buf;
 	size_t log_cnt;
+	size_t log_cap;
 	int nr_cpus;
 
 	int succ_cnt; /* successful tests */
