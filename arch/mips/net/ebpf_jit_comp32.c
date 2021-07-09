@@ -341,12 +341,20 @@ static int emit_bpf_divmod64(struct jit_ctx *ctx, const struct bpf_insn *insn)
  * Implement 64-bit BPF atomic insns on 32-bit systems by calling the
  * equivalent built-in kernel function. The function args may be mixed
  * 64/32-bit types, unlike the uniform u64 args of BPF kernel helpers.
- * Func proto: void atomic64_add(s64 a, atomic64_t *v)
  */
 static int emit_bpf_atomic64(struct jit_ctx *ctx, const struct bpf_insn *insn)
 {
-	int src, dst, mem_off;
+	/*
+	 * Since CMPXCHG uses R0 implicitly, outside of a passed
+	 * bpf_insn, we fake a lookup to get the MIPS base reg.
+	 */
+	const struct bpf_insn r0_insn = {.src_reg = BPF_REG_0};
+	const int r0 = ebpf_to_mips_reg(ctx, &r0_insn,
+					REG_SRC_NO_FP);
+	int mem_off, arg_off, stack_adj;
+	int src, dst, fetch;
 	u32 func_addr;
+
 
 	ctx->flags |= EBPF_SAVE_RA;
 
@@ -359,9 +367,52 @@ static int emit_bpf_atomic64(struct jit_ctx *ctx, const struct bpf_insn *insn)
 	/* Save caller registers */
 	emit_caller_save(ctx);
 
+	/*
+	 * Push O32 ABI stack, noting CMPXCHG requires 1 u64 arg passed
+	 * on the stack.
+	 */
+	stack_adj = insn->imm == BPF_CMPXCHG ? 24 : 16;
+	emit_instr(ctx, addiu, MIPS_R_SP, MIPS_R_SP, -stack_adj);
+
 	switch (insn->imm) {
+	case BPF_AND | BPF_FETCH:
+		/* void atomic64_fetch_and(s64 a, atomic64_t *v) */
+		func_addr = (u32) &atomic64_fetch_and;
+		goto args_common;
+	case BPF_OR | BPF_FETCH:
+		/* void atomic64_fetch_or(s64 a, atomic64_t *v) */
+		func_addr = (u32) &atomic64_fetch_or;
+		goto args_common;
+	case BPF_XOR | BPF_FETCH:
+		/* void atomic64_fetch_xor(s64 a, atomic64_t *v) */
+		func_addr = (u32) &atomic64_fetch_xor;
+		goto args_common;
+	case BPF_ADD | BPF_FETCH:
+		/* void atomic64_fetch_add(s64 a, atomic64_t *v) */
+		func_addr = (u32) &atomic64_fetch_add;
+		goto args_common;
+	case BPF_AND:
+		/* void atomic64_and(s64 a, atomic64_t *v) */
+		func_addr = (u32) &atomic64_and;
+		goto args_common;
+	case BPF_OR:
+		/* void atomic64_or(s64 a, atomic64_t *v) */
+		func_addr = (u32) &atomic64_or;
+		goto args_common;
+	case BPF_XOR:
+		/* void atomic64_xor(s64 a, atomic64_t *v) */
+		func_addr = (u32) &atomic64_xor;
+		goto args_common;
 	case BPF_ADD:
+		/* void atomic64_add(s64 a, atomic64_t *v) */
 		func_addr = (u32) &atomic64_add;
+args_common:
+		fetch = src;
+		/* Set up dst ptr in tmp reg if conflicting */
+		if (dst == MIPS_R_A0) {
+			emit_instr(ctx, move, LO(MIPS_R_T8), LO(dst));
+			dst = MIPS_R_T8;
+		}
 		/* Move s64 src to arg 1 as needed */
 		if (src != MIPS_R_A0) {
 			emit_instr(ctx, move, LO(MIPS_R_A0), LO(src));
@@ -369,6 +420,38 @@ static int emit_bpf_atomic64(struct jit_ctx *ctx, const struct bpf_insn *insn)
 		}
 		/* Set up dst ptr in arg 2 base register*/
 		emit_instr(ctx, addiu, MIPS_R_A2, LO(dst), mem_off);
+		break;
+	case BPF_XCHG:
+		/* s64 atomic64_xchg(atomic64_t *v, s64 i) */
+		func_addr = (u32) &atomic64_xchg;
+		fetch = src;
+		/* Set up dst ptr in tmp reg if conflicting */
+		if (dst == MIPS_R_A2) {
+			emit_instr(ctx, move, LO(MIPS_R_T8), LO(dst));
+			dst = MIPS_R_T8;
+		}
+		emit_instr(ctx, addiu, MIPS_R_AT, LO(dst), mem_off);
+		/* Move s64 src to arg 2 as needed */
+		if (src != MIPS_R_A2) {
+			emit_instr(ctx, move, LO(MIPS_R_A2), LO(src));
+			emit_instr(ctx, move, HI(MIPS_R_A2), HI(src));
+		}
+		/* Set up dst ptr in arg 1 base register*/
+		emit_instr(ctx, addiu, MIPS_R_A0, LO(dst), mem_off);
+		break;
+	case BPF_CMPXCHG:
+		/* s64 atomic64_cmpxchg(atomic64_t *v, s64 old, s64 new) */
+		func_addr = (u32) &atomic64_cmpxchg;
+		fetch = r0;
+		/* Move s64 src to arg 3 on stack */
+		arg_off = 16;
+		emit_instr(ctx, sw, LO(src), OFFLO(arg_off), MIPS_R_SP);
+		emit_instr(ctx, sw, HI(src), OFFHI(arg_off), MIPS_R_SP);
+		/* Set up dst ptr in arg 1 base register*/
+		emit_instr(ctx, addiu, MIPS_R_A0, LO(dst), mem_off);
+		/* Move s64 R0 to arg 2 */
+		emit_instr(ctx, move, LO(MIPS_R_A2), LO(r0));
+		emit_instr(ctx, move, HI(MIPS_R_A2), HI(r0));
 		break;
 	default:
 		pr_err("ATOMIC OP %02x NOT HANDLED\n", insn->imm);
@@ -378,21 +461,41 @@ static int emit_bpf_atomic64(struct jit_ctx *ctx, const struct bpf_insn *insn)
 	emit_const_to_reg(ctx, MIPS_R_T9, func_addr);
 	emit_instr(ctx, jalr, MIPS_R_RA, MIPS_R_T9);
 	/* Delay slot */
-	/* Push minimal O32 stack */
-	emit_instr(ctx, addiu, MIPS_R_SP, MIPS_R_SP, -16);
+	emit_instr(ctx, nop);
 
-	/* Pop minimal O32 stack */
-	emit_instr(ctx, addiu, MIPS_R_SP, MIPS_R_SP, 16);
-	/* Restore all caller registers since none clobbered by call */
-	emit_caller_restore(ctx, BPF_REG_FP);
+	/* Pop O32 stack */
+	emit_instr(ctx, addiu, MIPS_R_SP, MIPS_R_SP, stack_adj);
+
+	if (insn->imm & BPF_FETCH) {
+		/* Set up returned value */
+		if (fetch != MIPS_R_V0) {
+			emit_instr(ctx, move, LO(fetch), LO(MIPS_R_V0));
+			emit_instr(ctx, move, HI(fetch), HI(MIPS_R_V0));
+		}
+		/* Restore all caller registers except one fetched */
+		if (insn->imm == BPF_CMPXCHG)
+			emit_caller_restore(ctx, BPF_REG_0);
+		else
+			emit_caller_restore(ctx, insn->src_reg);
+	} else {
+		/* Restore all caller registers since none clobbered */
+		emit_caller_restore(ctx, BPF_REG_FP);
+	}
 
 	return 0;
 }
 
 /* Returns the number of insn slots consumed. */
 int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
-			  int this_idx, int exit_idx)
+		   int this_idx, int exit_idx)
 {
+	/*
+	 * Since CMPXCHG uses R0 implicitly, outside of a passed
+	 * bpf_insn, we fake a lookup to get the MIPS base reg.
+	 */
+	const struct bpf_insn r0_insn = {.src_reg = BPF_REG_0};
+	const int r0 = ebpf_to_mips_reg(ctx, &r0_insn,
+					REG_SRC_NO_FP);
 	const int bpf_class = BPF_CLASS(insn->code);
 	const int bpf_size = BPF_SIZE(insn->code);
 	const int bpf_src = BPF_SRC(insn->code);
@@ -400,7 +503,6 @@ int build_one_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 	int src, dst, r, mem_off, b_off;
 	bool need_swap, cmp_eq;
 	unsigned int target = 0;
-	u64 t64u;
 
 	switch (insn->code) {
 	case BPF_ALU64 | BPF_ADD | BPF_K: /* ALU64_IMM */
@@ -1014,7 +1116,6 @@ jeq_common:
 		if (dst < 0)
 			return dst;
 
-		t64u = (u32)insn->imm;
 		gen_imm_to_reg(insn, MIPS_R_AT, ctx);
 		emit_instr(ctx, and, MIPS_R_AT, LO(dst), MIPS_R_AT);
 		if (bpf_class == BPF_JMP && insn->imm < 0)
@@ -1163,10 +1264,6 @@ jeq_common:
 		if (src < 0 || dst < 0)
 			return -EINVAL;
 		mem_off = insn->off;
-		if (insn->imm != BPF_ADD) {
-			pr_err("ATOMIC OP %02x NOT HANDLED\n", insn->imm);
-			return -EINVAL;
-		}
 		/*
 		 * Drop reg pair scheme for more efficient temp register usage
 		 * given BPF_W mode.
@@ -1183,14 +1280,55 @@ jeq_common:
 			mem_off = 0;
 			dst = MIPS_R_T9;
 		}
+		/* Track variable branch offset due to CMPXCHG. */
+		b_off = ctx->idx;
 		emit_instr(ctx, ll, MIPS_R_AT, mem_off, dst);
-		emit_instr(ctx, addu, MIPS_R_AT, MIPS_R_AT, src);
-		emit_instr(ctx, sc, MIPS_R_AT, mem_off, dst);
+		switch (insn->imm) {
+		case BPF_AND | BPF_FETCH:
+		case BPF_AND:
+			emit_instr(ctx, and, MIPS_R_T8, MIPS_R_AT, src);
+			break;
+		case BPF_OR | BPF_FETCH:
+		case BPF_OR:
+			emit_instr(ctx, or, MIPS_R_T8, MIPS_R_AT, src);
+			break;
+		case BPF_XOR | BPF_FETCH:
+		case BPF_XOR:
+			emit_instr(ctx, xor, MIPS_R_T8, MIPS_R_AT, src);
+			break;
+		case BPF_ADD | BPF_FETCH:
+		case BPF_ADD:
+			emit_instr(ctx, addu, MIPS_R_T8, MIPS_R_AT, src);
+			break;
+		case BPF_XCHG:
+			emit_instr(ctx, move, MIPS_R_T8, src);
+			break;
+		case BPF_CMPXCHG:
+			/*
+			 * If R0 != old_val then break out of LL/SC loop
+			 */
+			emit_instr(ctx, bne, LO(r0), MIPS_R_AT, 4 * 4);
+			/* Delay slot */
+			emit_instr(ctx, move, MIPS_R_T8, src);
+			/* Return old_val in R0 */
+			src = LO(r0);
+			break;
+		default:
+			pr_err("ATOMIC OP %02x NOT HANDLED\n", insn->imm);
+			return -EINVAL;
+		}
+		emit_instr(ctx, sc, MIPS_R_T8, mem_off, dst);
 		/*
-		 * On failure back up to LL (-4 insns of 4 bytes each)
+		 * On failure back up to LL (calculate # insns)
 		 */
-		emit_instr(ctx, beqz, MIPS_R_AT, -4 * 4);
+		b_off = (b_off - ctx->idx - 1) * 4;
+		emit_instr(ctx, beqz, MIPS_R_AT, b_off);
 		emit_instr(ctx, nop);
+		/*
+		 * Using fetch returns old value in src or R0
+		 */
+		if (insn->imm & BPF_FETCH)
+			emit_instr(ctx, move, src, MIPS_R_AT);
 		break;
 
 	case BPF_STX | BPF_DW | BPF_MEM:
@@ -1230,8 +1368,23 @@ jeq_common:
 	 * insert it's own special zext insns.
 	 */
 	if ((bpf_class == BPF_ALU && !(bpf_op == BPF_END && insn->imm == 64)) ||
-	    (bpf_class == BPF_LDX && bpf_size != BPF_DW))
+	    (bpf_class == BPF_LDX && bpf_size != BPF_DW)) {
+		dst = ebpf_to_mips_reg(ctx, insn, REG_DST_NO_FP);
+		if (dst < 0)
+			return -EINVAL;
 		gen_zext_insn(dst, false, ctx);
+	}
+	if (insn->code == (BPF_STX|BPF_ATOMIC|BPF_W) && insn->imm & BPF_FETCH) {
+		if (insn->imm == BPF_CMPXCHG) {
+			gen_zext_insn(r0, false, ctx);
+		} else {
+			src = ebpf_to_mips_reg(ctx, insn, REG_SRC_NO_FP);
+			if (src < 0)
+				return -EINVAL;
+			gen_zext_insn(src, false, ctx);
+		}
+	}
+
 	return 1;
 }
 
