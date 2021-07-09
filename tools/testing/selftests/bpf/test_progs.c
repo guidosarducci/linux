@@ -70,21 +70,14 @@ static bool should_run(struct test_selector *sel, int num, const char *name)
 
 static void dump_test_log(const struct prog_test_def *test, bool failed)
 {
-	if (stdout == env.stdout)
-		return;
-
-	fflush(stdout); /* exports env.log_buf & env.log_cnt */
-
 	if (env.verbosity > VERBOSE_NONE || test->force_log || failed) {
 		if (env.log_cnt) {
-			env.log_buf[env.log_cnt] = '\0';
-			fprintf(env.stdout, "%s", env.log_buf);
+			fprintf(stdout, "%s", env.log_buf);
 			if (env.log_buf[env.log_cnt - 1] != '\n')
-				fprintf(env.stdout, "\n");
+				fprintf(stdout, "\n");
 		}
 	}
-
-	fseeko(stdout, 0, SEEK_SET); /* rewind */
+	env.log_cnt = 0;
 }
 
 static void skip_account(void)
@@ -95,7 +88,6 @@ static void skip_account(void)
 	}
 }
 
-static void stdio_restore(void);
 
 /* A bunch of tests set custom affinity per-thread and/or per-process. Reset
  * it after each test/sub-test.
@@ -111,13 +103,11 @@ static void reset_affinity() {
 
 	err = sched_setaffinity(0, sizeof(cpuset), &cpuset);
 	if (err < 0) {
-		stdio_restore();
 		fprintf(stderr, "Failed to reset process affinity: %d!\n", err);
 		exit(EXIT_ERR_SETUP_INFRA);
 	}
 	err = pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset);
 	if (err < 0) {
-		stdio_restore();
 		fprintf(stderr, "Failed to reset thread affinity: %d!\n", err);
 		exit(EXIT_ERR_SETUP_INFRA);
 	}
@@ -135,7 +125,6 @@ static void save_netns(void)
 static void restore_netns(void)
 {
 	if (setns(env.saved_netns_fd, CLONE_NEWNET) == -1) {
-		stdio_restore();
 		perror("setns(CLONE_NEWNS)");
 		exit(EXIT_ERR_SETUP_INFRA);
 	}
@@ -154,7 +143,7 @@ void test__end_subtest()
 
 	dump_test_log(test, sub_error_cnt);
 
-	fprintf(env.stdout, "#%d/%d %s:%s\n",
+	fprintf(stdout, "#%d/%d %s:%s\n",
 	       test->test_num, test->subtest_num, test->subtest_name,
 	       sub_error_cnt ? "FAIL" : (test->skip_cnt ? "SKIP" : "OK"));
 
@@ -172,8 +161,7 @@ bool test__start_subtest(const char *name)
 	test->subtest_num++;
 
 	if (!name || !name[0]) {
-		fprintf(env.stderr,
-			"Subtest #%d didn't provide sub-test name!\n",
+		fprintf(stderr, "Subtest #%d didn't provide sub-test name!\n",
 			test->subtest_num);
 		return false;
 	}
@@ -183,7 +171,7 @@ bool test__start_subtest(const char *name)
 
 	test->subtest_name = strdup(name);
 	if (!test->subtest_name) {
-		fprintf(env.stderr,
+		fprintf(stderr,
 			"Subtest #%d: failed to copy subtest name!\n",
 			test->subtest_num);
 		return false;
@@ -380,14 +368,14 @@ int kern_sync_rcu(void)
 static void unload_bpf_testmod(void)
 {
 	if (kern_sync_rcu())
-		fprintf(env.stderr, "Failed to trigger kernel-side RCU sync!\n");
+		fprintf(stderr, "Failed to trigger kernel-side RCU sync!\n");
 	if (delete_module("bpf_testmod", 0)) {
 		if (errno == ENOENT) {
 			if (env.verbosity > VERBOSE_NONE)
 				fprintf(stdout, "bpf_testmod.ko is already unloaded.\n");
 			return;
 		}
-		fprintf(env.stderr, "Failed to unload bpf_testmod.ko from kernel: %d\n", -errno);
+		fprintf(stderr, "Failed to unload bpf_testmod.ko from kernel: %d\n", -errno);
 		return;
 	}
 	if (env.verbosity > VERBOSE_NONE)
@@ -406,11 +394,11 @@ static int load_bpf_testmod(void)
 
 	fd = open("bpf_testmod.ko", O_RDONLY);
 	if (fd < 0) {
-		fprintf(env.stderr, "Can't find bpf_testmod.ko kernel module: %d\n", -errno);
+		fprintf(stderr, "Can't find bpf_testmod.ko kernel module: %d\n", -errno);
 		return -ENOENT;
 	}
 	if (finit_module(fd, "", 0)) {
-		fprintf(env.stderr, "Failed to load bpf_testmod.ko into the kernel: %d\n", -errno);
+		fprintf(stderr, "Failed to load bpf_testmod.ko into the kernel: %d\n", -errno);
 		close(fd);
 		return -EINVAL;
 	}
@@ -624,48 +612,6 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	return 0;
 }
 
-static void stdio_hijack(void)
-{
-#ifdef __GLIBC__
-	env.stdout = stdout;
-	env.stderr = stderr;
-
-	if (env.verbosity > VERBOSE_NONE) {
-		/* nothing to do, output to stdout by default */
-		return;
-	}
-
-	/* stdout and stderr -> buffer */
-	fflush(stdout);
-
-	stdout = open_memstream(&env.log_buf, &env.log_cnt);
-	if (!stdout) {
-		stdout = env.stdout;
-		perror("open_memstream");
-		return;
-	}
-
-	stderr = stdout;
-#endif
-}
-
-static void stdio_restore(void)
-{
-#ifdef __GLIBC__
-	if (stdout == env.stdout)
-		return;
-
-	fclose(stdout);
-	free(env.log_buf);
-
-	env.log_buf = NULL;
-	env.log_cnt = 0;
-
-	stdout = env.stdout;
-	stderr = env.stderr;
-#endif
-}
-
 /*
  * Determine if test_progs is running as a "flavored" test runner and switch
  * into corresponding sub-directory to load correct BPF objects.
@@ -725,10 +671,9 @@ int main(int argc, char **argv)
 	}
 
 	save_netns();
-	stdio_hijack();
 	env.has_testmod = true;
 	if (load_bpf_testmod()) {
-		fprintf(env.stderr, "WARNING! Selftests relying on bpf_testmod.ko will be skipped.\n");
+		fprintf(stderr, "WARNING! Selftests relying on bpf_testmod.ko will be skipped.\n");
 		env.has_testmod = false;
 	}
 	for (i = 0; i < prog_test_cnt; i++) {
@@ -747,7 +692,7 @@ int main(int argc, char **argv)
 		}
 
 		if (env.list_test_names) {
-			fprintf(env.stdout, "%s\n", test->test_name);
+			fprintf(stdout, "%s\n", test->test_name);
 			env.succ_cnt++;
 			continue;
 		}
@@ -766,7 +711,7 @@ int main(int argc, char **argv)
 
 		dump_test_log(test, test->error_cnt);
 
-		fprintf(env.stdout, "#%d %s:%s\n",
+		fprintf(stdout, "#%d %s:%s\n",
 			test->test_num, test->test_name,
 			test->error_cnt ? "FAIL" : "OK");
 
@@ -777,7 +722,6 @@ int main(int argc, char **argv)
 	}
 	if (env.has_testmod)
 		unload_bpf_testmod();
-	stdio_restore();
 
 	if (env.get_test_cnt) {
 		printf("%d\n", env.succ_cnt);
