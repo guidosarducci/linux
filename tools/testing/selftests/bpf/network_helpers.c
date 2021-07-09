@@ -12,6 +12,7 @@
 #include <linux/in6.h>
 
 #include "bpf_util.h"
+#define _GNU_SOURCE
 #include "network_helpers.h"
 
 #define clean_errno() (errno == 0 ? "None" : strerror(errno))
