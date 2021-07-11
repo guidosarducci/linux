@@ -556,9 +556,6 @@ case_alu64_mul_x:
 			}
 			emit_instr(ctx, addu, HI(dst), HI(dst), MIPS_R_AT);
 			break;
-		case BPF_DIV:
-		case BPF_MOD:
-			return -EINVAL;
 		case BPF_LSH:
 			emit_instr(ctx, beqz, LO(src), 11 * 4);
 			emit_instr(ctx, addiu, MIPS_R_AT, LO(src), -32);
