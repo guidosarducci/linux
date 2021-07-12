@@ -137,17 +137,17 @@ enum reg_val_type {
 
 /**
  * struct jit_ctx - JIT context
- * @skf:		The sk_filter
+ * @prog:		The program
  * @stack_size:		eBPF stack size
  * @bpf_stack_off:	eBPF FP offset
  * @idx:		Instruction index
  * @flags:		JIT flags
  * @offsets:		Instruction offsets
- * @target:		Memory location for the compiled filter
- * @reg_val_types	Packed enum reg_val_type for each register.
+ * @target:		Memory location for compiled instructions
+ * @reg_val_types	Packed enum reg_val_type for each register
  */
 struct jit_ctx {
-	const struct bpf_prog *skf;
+	const struct bpf_prog *prog;
 	int stack_size;
 	int bpf_stack_off;
 	u32 idx;
@@ -235,7 +235,7 @@ static inline u32 b_imm(unsigned int tgt, struct jit_ctx *ctx)
 
 static inline bool tail_call_present(struct jit_ctx *ctx)
 {
-	return ctx->flags & EBPF_SEEN_TC || ctx->skf->aux->tail_call_reachable;
+	return ctx->flags & EBPF_SEEN_TC || ctx->prog->aux->tail_call_reachable;
 }
 
 static inline bool is_bad_offset(int b_off)
@@ -258,7 +258,7 @@ static inline void gen_sext_insn(int dst, struct jit_ctx *ctx)
  */
 static inline void gen_zext_insn(int dst, bool force, struct jit_ctx *ctx)
 {
-	if (!ctx->skf->aux->verifier_zext || force) {
+	if (!ctx->prog->aux->verifier_zext || force) {
 		if (is64bit())
 			emit_instr(ctx, dinsu, dst, MIPS_R_ZERO, 32, 32);
 		else

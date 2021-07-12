@@ -177,7 +177,7 @@ void emit_const_to_reg(struct jit_ctx *ctx, int dst, unsigned long value)
 static int reg_val_propagate_range(struct jit_ctx *ctx, u64 initial_rvt,
 				   int start_idx, bool follow_taken)
 {
-	const struct bpf_prog *prog = ctx->skf;
+	const struct bpf_prog *prog = ctx->prog;
 	const struct bpf_insn *insn;
 	u64 exit_rvt = initial_rvt;
 	u64 *rvt = ctx->reg_val_types;
@@ -378,7 +378,7 @@ static int reg_val_propagate_range(struct jit_ctx *ctx, u64 initial_rvt,
  */
 static int reg_val_propagate(struct jit_ctx *ctx)
 {
-	const struct bpf_prog *prog = ctx->skf;
+	const struct bpf_prog *prog = ctx->prog;
 	u64 exit_rvt;
 	int reg;
 	int i;
@@ -482,7 +482,7 @@ static int build_int_prologue(struct jit_ctx *ctx)
 		      bpf2mips[JIT_RUN_TCC].reg :
 		      TEMP_PASS_TCC;
 	int tcc_sav = bpf2mips[JIT_SAV_TCC].reg;
-	const struct bpf_prog *prog = ctx->skf;
+	const struct bpf_prog *prog = ctx->prog;
 	int r10 = bpf2mips[BPF_REG_10].reg;
 	int r1 = bpf2mips[BPF_REG_1].reg;
 	int stack_adjust = 0;
@@ -531,7 +531,7 @@ static int build_int_prologue(struct jit_ctx *ctx)
 	 * As a BPF2BPF subprog, we are called directly and must avoid
 	 * resetting the TCC.
 	 */
-	if (!ctx->skf->is_func)
+	if (!ctx->prog->is_func)
 		emit_instr(ctx, addiu, tcc_run, MIPS_R_ZERO, MAX_TAIL_CALL_CNT);
 
 	/*
@@ -542,7 +542,7 @@ static int build_int_prologue(struct jit_ctx *ctx)
 	 * must set up R1 context according to the kernel call ABI. If we are
 	 * a BPF2BPF call then all registers are already correctly set up.
 	 */
-	if (!is64bit() && !ctx->skf->is_func) {
+	if (!is64bit() && !ctx->prog->is_func) {
 		if (isbigend())
 			emit_instr(ctx, move, LO(r1), MIPS_R_A0);
 		/* Sanitize upper 32-bit reg */
@@ -627,7 +627,7 @@ static int build_int_prologue(struct jit_ctx *ctx)
 
 static int build_int_body(struct jit_ctx *ctx)
 {
-	const struct bpf_prog *prog = ctx->skf;
+	const struct bpf_prog *prog = ctx->prog;
 	const struct bpf_insn *insn;
 	int i, r;
 
@@ -667,7 +667,7 @@ static int build_int_body(struct jit_ctx *ctx)
 
 static int build_int_epilogue(struct jit_ctx *ctx, int dest_reg)
 {
-	const struct bpf_prog *prog = ctx->skf;
+	const struct bpf_prog *prog = ctx->prog;
 	int stack_adjust = ctx->stack_size;
 	int store_offset = stack_adjust - sizeof(long);
 	int r1 = bpf2mips[BPF_REG_1].reg;
@@ -683,7 +683,7 @@ static int build_int_epilogue(struct jit_ctx *ctx, int dest_reg)
 	 * Tails calls must ensure the passed R1 context is consistent with
 	 * the kernel ABI, and requires fixup on MIPS32 bigendian systems.
 	 */
-	if (dest_reg == MIPS_R_RA && !ctx->skf->is_func) { /* kernel return */
+	if (dest_reg == MIPS_R_RA && !ctx->prog->is_func) { /* kernel return */
 		if (is64bit()) {
 			/* Don't let zero extended value escape. */
 			td = get_reg_val_type(ctx, prog->len, BPF_REG_0);
@@ -1023,7 +1023,7 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 	if (ctx.reg_val_types == NULL)
 		goto out_err;
 
-	ctx.skf = prog;
+	ctx.prog = prog;
 
 	if (reg_val_propagate(&ctx))
 		goto out_err;
