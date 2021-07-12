@@ -139,6 +139,7 @@ enum reg_val_type {
  * struct jit_ctx - JIT context
  * @skf:		The sk_filter
  * @stack_size:		eBPF stack size
+ * @bpf_stack_off:	eBPF FP offset
  * @idx:		Instruction index
  * @flags:		JIT flags
  * @offsets:		Instruction offsets
