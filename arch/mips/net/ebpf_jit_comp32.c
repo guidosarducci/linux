@@ -175,8 +175,12 @@ static int gen_imm_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 		/* multi insn immediate case */
 		if (BPF_OP(insn->code) == BPF_MOV) {
 			gen_imm_to_reg(insn, LO(dst), ctx);
-			if (BPF_CLASS(insn->code) == BPF_ALU64)
-				gen_sext_insn(dst, ctx);
+			if (BPF_CLASS(insn->code) == BPF_ALU64) {
+				if (imm < 0)
+					gen_sext_insn(dst, ctx);
+				else
+					gen_zext_insn(dst, true, ctx);
+			}
 		} else {
 			gen_imm_to_reg(insn, MIPS_R_AT, ctx);
 			switch (BPF_OP(insn->code) | BPF_CLASS(insn->code)) {
