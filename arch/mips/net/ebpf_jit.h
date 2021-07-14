@@ -150,6 +150,7 @@ struct jit_ctx {
 	const struct bpf_prog *prog;
 	int stack_size;
 	int bpf_stack_off;
+	int prolog_skip;
 	u32 idx;
 	u32 flags;
 	u32 *offsets;
