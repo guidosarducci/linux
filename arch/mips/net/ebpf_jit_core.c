@@ -979,21 +979,17 @@ void emit_caller_restore(struct jit_ctx *ctx, int bpf_ret)
 
 struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 {
-	struct bpf_prog *orig_prog = prog;
-	bool tmp_blinded = false;
-	struct bpf_prog *tmp;
-	struct bpf_binary_header *header = NULL;
-	struct jit_ctx ctx;
-	unsigned int image_size;
-	u8 *image_ptr;
+	bool tmp_blinded = false, extra_pass = false;
+	struct bpf_prog *tmp, *orig_prog = prog;
+	unsigned int image_size, pass = 3;
+	struct bpf_binary_header *header;
+	struct jit_ctx *ctx;
 
 	if (!prog->jit_requested)
-		return prog;
+		return orig_prog;
 
+	/* Attempt blinding but fall back to the interpreter on failure. */
 	tmp = bpf_jit_blind_constants(prog);
-	/* If blinding was requested and we failed during blinding,
-	 * we must fall back to the interpreter.
-	 */
 	if (IS_ERR(tmp))
 		return orig_prog;
 	if (tmp != prog) {
@@ -1001,7 +997,34 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 		prog = tmp;
 	}
 
-	memset(&ctx, 0, sizeof(ctx));
+	ctx = prog->aux->jit_data;
+	if (!ctx) {
+		ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
+		if (!ctx) {
+			prog = orig_prog;
+			goto out;
+		}
+		prog->aux->jit_data = ctx;
+	}
+
+	/*
+	 * Assume extra pass needed for patching addresses if previous
+	 * ctx exists in saved jit_data, so skip to code generation.
+	 */
+	if (ctx->offsets) {
+		extra_pass = true;
+		pass++;
+		image_size = 4 * ctx->idx;
+		header = bpf_jit_binary_hdr(ctx->prog);
+		goto skip_init_ctx;
+	}
+
+	ctx->prog = prog;
+	ctx->offsets = kcalloc(prog->len + 1,
+			       sizeof(*ctx->offsets),
+			       GFP_KERNEL);
+	if (!ctx->offsets)
+		goto out_err;
 
 	/* Check Octeon bbit ops only for MIPS64. */
 	if (is64bit()) {
@@ -1011,29 +1034,23 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 		case CPU_CAVIUM_OCTEON_PLUS:
 		case CPU_CAVIUM_OCTEON2:
 		case CPU_CAVIUM_OCTEON3:
-			ctx.use_bbit_insns = 1;
+			ctx->use_bbit_insns = 1;
 			break;
 		default:
-			ctx.use_bbit_insns = 0;
+			ctx->use_bbit_insns = 0;
 		}
 		preempt_enable();
 	}
 
-	ctx.offsets = kcalloc(prog->len + 1, sizeof(*ctx.offsets), GFP_KERNEL);
-	if (ctx.offsets == NULL)
-		goto out_err;
-
-	ctx.prog = prog;
-
 	/* Static analysis only used for MIPS64. */
 	if (is64bit()) {
-		ctx.reg_val_types = kcalloc(prog->len + 1,
-					    sizeof(*ctx.reg_val_types),
-					    GFP_KERNEL);
-		if (ctx.reg_val_types == NULL)
+		ctx->reg_val_types = kcalloc(prog->len + 1,
+					     sizeof(*ctx->reg_val_types),
+					     GFP_KERNEL);
+		if (!ctx->reg_val_types)
 			goto out_err;
 
-		if (reg_val_propagate(&ctx))
+		if (reg_val_propagate(ctx))
 			goto out_err;
 	}
 
@@ -1041,18 +1058,18 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 	 * First pass discovers used resources and instruction offsets
 	 * assuming short branches are used.
 	 */
-	if (build_int_body(&ctx))
+	if (build_int_body(ctx))
 		goto out_err;
 
 	/*
 	 * If no calls are made (EBPF_SAVE_RA), then tailcall count located
 	 * in runtime reg if defined, else we backup to save reg or stack.
 	 */
-	if (tail_call_present(&ctx)) {
-		if (ctx.flags & EBPF_SAVE_RA)
-			ctx.flags |= bpf2mips[JIT_SAV_TCC].flags;
+	if (tail_call_present(ctx)) {
+		if (ctx->flags & EBPF_SAVE_RA)
+			ctx->flags |= bpf2mips[JIT_SAV_TCC].flags;
 		else if (bpf2mips[JIT_RUN_TCC].reg)
-			ctx.flags |= EBPF_TCC_IN_RUN;
+			ctx->flags |= EBPF_TCC_IN_RUN;
 	}
 
 	/*
@@ -1063,59 +1080,64 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 	 * necessary.
 	 */
 	do {
-		ctx.idx = 0;
-		ctx.gen_b_offsets = 1;
-		ctx.long_b_conversion = 0;
-		if (build_int_prologue(&ctx))
+		ctx->idx = 0;
+		ctx->gen_b_offsets = 1;
+		ctx->long_b_conversion = 0;
+		if (build_int_prologue(ctx))
 			goto out_err;
-		if (build_int_body(&ctx))
+		if (build_int_body(ctx))
 			goto out_err;
-		if (build_int_epilogue(&ctx, MIPS_R_RA))
+		if (build_int_epilogue(ctx, MIPS_R_RA))
 			goto out_err;
-	} while (ctx.long_b_conversion);
+	} while (ctx->long_b_conversion);
 
-	image_size = 4 * ctx.idx;
+	image_size = 4 * ctx->idx;
 
-	header = bpf_jit_binary_alloc(image_size, &image_ptr,
+	header = bpf_jit_binary_alloc(image_size, (void *)&ctx->target,
 				      sizeof(u32), jit_fill_hole);
-	if (header == NULL)
+	if (!header)
 		goto out_err;
 
-	ctx.target = (u32 *)image_ptr;
+skip_init_ctx:
 
-	/* Third pass generates the code */
-	ctx.idx = 0;
-	if (build_int_prologue(&ctx))
+	/* Third pass generates the code (fourth patches call addresses) */
+	ctx->idx = 0;
+	if (build_int_prologue(ctx))
 		goto out_err;
-	if (build_int_body(&ctx))
+	if (build_int_body(ctx))
 		goto out_err;
-	if (build_int_epilogue(&ctx, MIPS_R_RA))
+	if (build_int_epilogue(ctx, MIPS_R_RA))
 		goto out_err;
 
-	/* Update the icache */
-	flush_icache_range((unsigned long)ctx.target,
-			   (unsigned long)&ctx.target[ctx.idx]);
+	prog->bpf_func = (void *)ctx->target;
+	prog->jited = 1;
+	prog->jited_len = image_size;
 
 	if (bpf_jit_enable > 1)
 		/* Dump JIT code */
-		bpf_jit_dump(prog->len, image_size, 2, ctx.target);
+		bpf_jit_dump(prog->len, image_size, pass, ctx->target);
 
-	bpf_jit_binary_lock_ro(header);
-	prog->bpf_func = (void *)ctx.target;
-	prog->jited = 1;
-	prog->jited_len = image_size;
-out_normal:
+	/* Update the icache */
+	flush_icache_range((unsigned long)ctx->target,
+			   (unsigned long)&ctx->target[ctx->idx]);
+
+	if (!prog->is_func || extra_pass) {
+		bpf_jit_binary_lock_ro(header);
+out_ctx:
+		kfree(ctx->offsets);
+		kfree(ctx->reg_val_types);
+		kfree(ctx);
+		prog->aux->jit_data = NULL;
+	}
+out:
 	if (tmp_blinded)
 		bpf_jit_prog_release_other(prog, prog == orig_prog ?
 					   tmp : orig_prog);
-	kfree(ctx.offsets);
-	kfree(ctx.reg_val_types);
-
 	return prog;
 
 out_err:
 	prog = orig_prog;
 	if (header)
 		bpf_jit_binary_free(header);
-	goto out_normal;
+	goto out_ctx;
 }
