@@ -1002,18 +1002,21 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 
 	memset(&ctx, 0, sizeof(ctx));
 
-	preempt_disable();
-	switch (current_cpu_type()) {
-	case CPU_CAVIUM_OCTEON:
-	case CPU_CAVIUM_OCTEON_PLUS:
-	case CPU_CAVIUM_OCTEON2:
-	case CPU_CAVIUM_OCTEON3:
-		ctx.use_bbit_insns = 1;
-		break;
-	default:
-		ctx.use_bbit_insns = 0;
+	/* Check Octeon bbit ops only for MIPS64. */
+	if (is64bit()) {
+		preempt_disable();
+		switch (current_cpu_type()) {
+		case CPU_CAVIUM_OCTEON:
+		case CPU_CAVIUM_OCTEON_PLUS:
+		case CPU_CAVIUM_OCTEON2:
+		case CPU_CAVIUM_OCTEON3:
+			ctx.use_bbit_insns = 1;
+			break;
+		default:
+			ctx.use_bbit_insns = 0;
+		}
+		preempt_enable();
 	}
-	preempt_enable();
 
 	ctx.offsets = kcalloc(prog->len + 1, sizeof(*ctx.offsets), GFP_KERNEL);
 	if (ctx.offsets == NULL)
