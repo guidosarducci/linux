@@ -13,6 +13,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <ctype.h>
 #include <unistd.h>
 #include <errno.h>
 #include <string.h>
@@ -1741,29 +1742,37 @@ int main(int argc, char **argv)
 {
 	unsigned int from = 0, to = ARRAY_SIZE(tests);
 	bool unpriv = !is_admin();
-	int arg = 1;
+	int i, arg = 1;
 
-	if (argc > 1 && strcmp(argv[1], "-v") == 0) {
+	while (argc > 1 && *argv[arg] == '-') {
+		if (strcmp(argv[arg], "-l") == 0) {
+			for (i = from; i < to; i++)
+				printf("#%d %s\n", i, tests[i].descr);
+			return EXIT_SUCCESS;
+		} else if (strcmp(argv[arg], "-v") == 0) {
+			verbose = true;
+		} else
+			goto out_help;
 		arg++;
-		verbose = true;
 		argc--;
 	}
 
-	if (argc == 3) {
-		unsigned int l = atoi(argv[arg]);
-		unsigned int u = atoi(argv[arg + 1]);
-
-		if (l < to && u < to) {
-			from = l;
-			to   = u + 1;
-		}
-	} else if (argc == 2) {
+	for (i = 1; i <= 2 && argc > 1; i++, arg++, argc--) {
 		unsigned int t = atoi(argv[arg]);
 
-		if (t < to) {
+		if (!isdigit(*argv[arg]))
+			goto out_help;
+		t = t < ARRAY_SIZE(tests) ? t : ARRAY_SIZE(tests) - 1;
+		if (i == 1)
 			from = t;
-			to   = t + 1;
-		}
+		to = t + 1;
+	}
+
+	if (argc > 1) {
+out_help:
+		printf("Usage: %s -l | [-v|-vv] [<tst_lo> [<tst_hi>]]\n",
+		       argv[0]);
+		return EXIT_FAILURE;
 	}
 
 	get_unpriv_disabled();
