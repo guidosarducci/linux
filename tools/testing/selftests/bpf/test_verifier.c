@@ -10,7 +10,6 @@
 #include <endian.h>
 #include <asm/types.h>
 #include <linux/types.h>
-#include <linux/kernel.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1836,20 +1835,27 @@ int main(int argc, char **argv)
 	}
 
 	if (argc == 3) {
-		unsigned int l = min(atoi(argv[arg]), (int) ARRAY_SIZE(tests) - 1);
-		unsigned int u = min(atoi(argv[arg + 1]), (int) ARRAY_SIZE(tests) - 1);
+		unsigned int l = atoi(argv[arg]);
+		unsigned int u = atoi(argv[arg + 1]);
 
 		if (!isdigit(*argv[arg]) || !isdigit(*argv[arg + 1]))
 			goto out_help;
-		from = l;
-		to   = u + 1;
+		if (l < to)
+			from = l;
+		else
+			from = to - 1;
+		if (u < to)
+			to   = u + 1;
 	} else if (argc == 2) {
-		unsigned int t = min(atoi(argv[arg]), (int) ARRAY_SIZE(tests) - 1);
+		unsigned int t = atoi(argv[arg]);
 
 		if (!isdigit(*argv[arg]))
 			goto out_help;
-		from = t;
-		to   = t + 1;
+		if (t < to) {
+			from = t;
+			to   = t + 1;
+		} else
+			from = to - 1;
 	} else if (argc > 1) {
 out_help:
 		printf("Usage: %s -l | [-v|-vv] [<tst_lo> [<tst_hi>]]\n",
