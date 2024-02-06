@@ -10,6 +10,7 @@
 #include <endian.h>
 #include <asm/types.h>
 #include <linux/types.h>
+#include <linux/kernel.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1834,34 +1835,29 @@ int main(int argc, char **argv)
 		argc--;
 	}
 
-	if (argc == 3) {
-		unsigned int l = atoi(argv[arg]);
-		unsigned int u = atoi(argv[arg + 1]);
-
-		if (!isdigit(*argv[arg]) || !isdigit(*argv[arg + 1]))
-			goto out_help;
-		if (l < to)
-			from = l;
-		else
-			from = to - 1;
-		if (u < to)
-			to   = u + 1;
-	} else if (argc == 2) {
-		unsigned int t = atoi(argv[arg]);
+	for (i = 1; i <= 2 && argc > 1; i++) {
+		unsigned int t = min(atoi(argv[arg]), (int) ARRAY_SIZE(tests) - 1);
 
 		if (!isdigit(*argv[arg]))
 			goto out_help;
-		if (t < to) {
+		/* First numeric arg sets single test or lower bound,
+		 * while second sets upper bound.
+		 */
+		if (i == 1) {
 			from = t;
 			to   = t + 1;
 		} else
-			from = to - 1;
-	} else if (argc > 1) {
+			to   = t + 1;
+		arg++;
+		argc--;
+	}
+
+	if (argc > 1) {
 out_help:
 		printf("Usage: %s -l | [-v|-vv] [<tst_lo> [<tst_hi>]]\n",
 		       argv[0]);
 		return EXIT_FAILURE;
-        }
+	}
 
 	unpriv_disabled = get_unpriv_disabled();
 	if (unpriv && unpriv_disabled) {
