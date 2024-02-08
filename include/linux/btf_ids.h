@@ -28,9 +28,14 @@ struct btf_id_set8 {
 
 /*
  * Following macros help to define lists of BTF IDs placed
- * in .BTF_ids section. They are initially filled with zeros
- * (during compilation) and resolved later during the
- * linking phase by resolve_btfids tool.
+ * in .BTF_ids section. IDs are initially filled with zeros
+ * (during compilation) and resolved later during the linking
+ * phase by resolve_btfids tool, which also converts .BTF_ids
+ * section data from host to target endianness as needed.
+ *
+ * Some BTF ID structs include fields populated at compilation
+ * time (e.g. flags). These fields must be stored in host
+ * endianness to be consistent with resolve_btfids behaviour.
  *
  * Any change in list layout must be reflected in resolve_btfids
  * tool logic.
@@ -56,6 +61,23 @@ word							\
 	__PASTE(__PASTE(prefix, __COUNTER__), __LINE__)
 
 /*
+ * The __BTF_HOST_SWAB32 macro ensures non-zero data stored
+ * at compile-time to .BTF_ids section uses host endianness
+ * for resolv_btfids to post-process.
+ */
+
+#if __BYTE_ORDER__ == CONFIG_HOST_BYTE_ORDER
+#define __BTF_HOST_SWAB32(x) __stringify(x)
+#else
+#define __BTF_HOST_SWAB32(x)			\
+__stringify(					\
+	(((x) & 0x000000ff) << 24) |		\
+	(((x) & 0x0000ff00) <<  8) |		\
+	(((x) & 0x00ff0000) >>  8) |		\
+	(((x) & 0xff000000) >> 24))
+#endif
+
+/*
  * The BTF_ID defines unique symbol for each ID pointing
  * to 4 zero bytes.
  */
@@ -63,7 +85,8 @@ word							\
 	__BTF_ID(__ID(__BTF_ID__##prefix##__##name##__), "")
 
 #define ____BTF_ID_FLAGS(prefix, name, flags) \
-	__BTF_ID(__ID(__BTF_ID__##prefix##__##name##__), ".long " #flags "\n")
+	__BTF_ID(__ID(__BTF_ID__##prefix##__##name##__), \
+		 ".long " __BTF_HOST_SWAB32(flags) "\n")
 #define __BTF_ID_FLAGS(prefix, name, flags, ...) \
 	____BTF_ID_FLAGS(prefix, name, flags)
 #define BTF_ID_FLAGS(prefix, name, ...) \
@@ -168,8 +191,8 @@ extern struct btf_id_set name;
 
 /*
  * The BTF_SET8_START/END macros pair defines sorted list of
- * BTF IDs and their flags plus its members count, with the
- * following layout:
+ * BTF IDs and their flags plus its members count and global
+ * flags, with the following layout:
  *
  * BTF_SET8_START(list)
  * BTF_ID_FLAGS(type1, name1, flags)
@@ -194,7 +217,7 @@ asm(							\
 "." #scope " __BTF_ID__set8__" #name ";        \n"	\
 "__BTF_ID__set8__" #name ":;                   \n"	\
 ".zero 4                                       \n"	\
-".long " __stringify(flags)                   "\n"	\
+".long " __BTF_HOST_SWAB32(flags)             "\n"	\
 ".popsection;                                  \n");
 
 #define BTF_SET8_START(name)				\
@@ -203,7 +226,7 @@ __BTF_SET8_START(name, local, 0)
 #define BTF_SET8_END(name)				\
 asm(							\
 ".pushsection " BTF_IDS_SECTION ",\"a\";      \n"	\
-".size __BTF_ID__set8__" #name ", .-" #name "  \n"	\
+".size __BTF_ID__set8__" #name ", .-" #name  "\n"	\
 ".popsection;                                 \n");	\
 extern struct btf_id_set8 name;
 
