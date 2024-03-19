@@ -106,6 +106,13 @@ TEST_GEN_PROGS_EXTENDED = test_sock_addr test_skb_cgroup_id_user \
 
 TEST_GEN_FILES += liburandom_read.so urandom_read sign-file
 
+EXTRA_CLEAN = $(TEST_CUSTOM_PROGS) $(SCRATCH_DIR) $(HOST_SCRATCH_DIR)	\
+	prog_tests/tests.h map_tests/tests.h verifier/tests.h		\
+	feature bpftool							\
+	$(addprefix $(OUTPUT)/,*.o *.skel.h *.lskel.h *.subskel.h	\
+			       no_alu32 cpuv4 bpf_gcc bpf_testmod.ko	\
+			       liburandom_read.so)
+
 # Emit succinct information message describing current building step
 # $1 - generic step name (e.g., CC, LINK, etc);
 # $2 - optional "flavor" specifier; if provided, will be emitted as [flavor];
@@ -706,13 +713,6 @@ $(OUTPUT)/veristat: $(OUTPUT)/veristat.o
 $(OUTPUT)/uprobe_multi: uprobe_multi.c
 	$(call msg,BINARY,,$@)
 	$(Q)$(CC) $(CFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o $@
-
-EXTRA_CLEAN := $(TEST_CUSTOM_PROGS) $(SCRATCH_DIR) $(HOST_SCRATCH_DIR)	\
-	prog_tests/tests.h map_tests/tests.h verifier/tests.h		\
-	feature bpftool							\
-	$(addprefix $(OUTPUT)/,*.o *.skel.h *.lskel.h *.subskel.h	\
-			       no_alu32 cpuv4 bpf_gcc bpf_testmod.ko	\
-			       liburandom_read.so)
 
 .PHONY: docs docs-clean
 
