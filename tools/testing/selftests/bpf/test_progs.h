@@ -2,6 +2,7 @@
 #ifndef __TEST_PROGS_H
 #define __TEST_PROGS_H
 
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <unistd.h>
 #include <errno.h>

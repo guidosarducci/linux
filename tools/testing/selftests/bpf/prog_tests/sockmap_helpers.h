@@ -1,6 +1,10 @@
 #ifndef __SOCKMAP_HELPERS__
 #define __SOCKMAP_HELPERS__
 
+#define _GNU_SOURCE
+#include <stdio.h>
+#include <string.h>
+#include <errno.h>
 #include <linux/vm_sockets.h>
 
 #define IO_TIMEOUT_SEC 30
@@ -16,7 +20,13 @@
 
 #define _FAIL(errnum, fmt...)                                                  \
 	({                                                                     \
-		error_at_line(0, (errnum), __func__, __LINE__, fmt);           \
+                fflush(stdout);                                                \
+                fprintf(stderr, "%s:%s:%d: ",                                  \
+                        program_invocation_name, __func__, __LINE__);          \
+                fprintf(stderr, fmt);                                          \
+		if (errnum)                                                    \
+			fprintf(stderr, ": %s\n", strerror(errnum));           \
+		fprintf(stderr, "\n");                                         \
 		CHECK_FAIL(true);                                              \
 	})
 #define FAIL(fmt...) _FAIL(0, fmt)
