@@ -43,15 +43,15 @@ static void stdio_hijack_init(char **log_buf, size_t *log_cnt)
 
 	stdout = open_memstream(log_buf, log_cnt);
 	if (!stdout) {
-		stdout = env.stdout;
+		stdout = env._stdout;
 		perror("open_memstream");
 		return;
 	}
 
 	if (env.subtest_state)
-		env.subtest_state->stdout = stdout;
+		env.subtest_state->_stdout = stdout;
 	else
-		env.test_state->stdout = stdout;
+		env.test_state->_stdout = stdout;
 
 	stderr = stdout;
 #endif
@@ -65,8 +65,8 @@ static void stdio_hijack(char **log_buf, size_t *log_cnt)
 		return;
 	}
 
-	env.stdout = stdout;
-	env.stderr = stderr;
+	env._stdout = stdout;
+	env._stderr = stderr;
 
 	stdio_hijack_init(log_buf, log_cnt);
 #endif
@@ -83,13 +83,13 @@ static void stdio_restore_cleanup(void)
 	fflush(stdout);
 
 	if (env.subtest_state) {
-		fclose(env.subtest_state->stdout);
-		env.subtest_state->stdout = NULL;
-		stdout = env.test_state->stdout;
-		stderr = env.test_state->stdout;
+		fclose(env.subtest_state->_stdout);
+		env.subtest_state->_stdout = NULL;
+		stdout = env.test_state->_stdout;
+		stderr = env.test_state->_stdout;
 	} else {
-		fclose(env.test_state->stdout);
-		env.test_state->stdout = NULL;
+		fclose(env.test_state->_stdout);
+		env.test_state->_stdout = NULL;
 	}
 #endif
 }
@@ -102,13 +102,13 @@ static void stdio_restore(void)
 		return;
 	}
 
-	if (stdout == env.stdout)
+	if (stdout == env._stdout)
 		return;
 
 	stdio_restore_cleanup();
 
-	stdout = env.stdout;
-	stderr = env.stderr;
+	stdout = env._stdout;
+	stderr = env._stderr;
 #endif
 }
 
@@ -232,21 +232,21 @@ static char *test_result(bool failed, bool skipped)
 static void print_test_log(char *log_buf, size_t log_cnt)
 {
 	log_buf[log_cnt] = '\0';
-	fprintf(env.stdout, "%s", log_buf);
+	fprintf(env._stdout, "%s", log_buf);
 	if (log_buf[log_cnt - 1] != '\n')
-		fprintf(env.stdout, "\n");
+		fprintf(env._stdout, "\n");
 }
 
 #define TEST_NUM_WIDTH 7
 
 static void print_test_name(int test_num, const char *test_name, char *result)
 {
-	fprintf(env.stdout, "#%-*d %s", TEST_NUM_WIDTH, test_num, test_name);
+	fprintf(env._stdout, "#%-*d %s", TEST_NUM_WIDTH, test_num, test_name);
 
 	if (result)
-		fprintf(env.stdout, ":%s", result);
+		fprintf(env._stdout, ":%s", result);
 
-	fprintf(env.stdout, "\n");
+	fprintf(env._stdout, "\n");
 }
 
 static void print_subtest_name(int test_num, int subtest_num,
@@ -257,14 +257,14 @@ static void print_subtest_name(int test_num, int subtest_num,
 
 	snprintf(test_num_str, sizeof(test_num_str), "%d/%d", test_num, subtest_num);
 
-	fprintf(env.stdout, "#%-*s %s/%s",
+	fprintf(env._stdout, "#%-*s %s/%s",
 		TEST_NUM_WIDTH, test_num_str,
 		test_name, subtest_name);
 
 	if (result)
-		fprintf(env.stdout, ":%s", result);
+		fprintf(env._stdout, ":%s", result);
 
-	fprintf(env.stdout, "\n");
+	fprintf(env._stdout, "\n");
 }
 
 static void dump_test_log(const struct prog_test_def *test,
@@ -413,7 +413,7 @@ bool test__start_subtest(const char *subtest_name)
 	memset(subtest_state, 0, sub_state_size);
 
 	if (!subtest_name || !subtest_name[0]) {
-		fprintf(env.stderr,
+		fprintf(env._stderr,
 			"Subtest #%d didn't provide sub-test name!\n",
 			state->subtest_num);
 		return false;
@@ -421,7 +421,7 @@ bool test__start_subtest(const char *subtest_name)
 
 	subtest_state->name = strdup(subtest_name);
 	if (!subtest_state->name) {
-		fprintf(env.stderr,
+		fprintf(env._stderr,
 			"Subtest #%d: failed to copy subtest name!\n",
 			state->subtest_num);
 		return false;
@@ -636,14 +636,14 @@ int kern_sync_rcu(void)
 static void unload_bpf_testmod(void)
 {
 	if (kern_sync_rcu())
-		fprintf(env.stderr, "Failed to trigger kernel-side RCU sync!\n");
+		fprintf(env._stderr, "Failed to trigger kernel-side RCU sync!\n");
 	if (delete_module("bpf_testmod", 0)) {
 		if (errno == ENOENT) {
 			if (verbose())
 				fprintf(stdout, "bpf_testmod.ko is already unloaded.\n");
 			return;
 		}
-		fprintf(env.stderr, "Failed to unload bpf_testmod.ko from kernel: %d\n", -errno);
+		fprintf(env._stderr, "Failed to unload bpf_testmod.ko from kernel: %d\n", -errno);
 		return;
 	}
 	if (verbose())
@@ -662,11 +662,11 @@ static int load_bpf_testmod(void)
 
 	fd = open("bpf_testmod.ko", O_RDONLY);
 	if (fd < 0) {
-		fprintf(env.stderr, "Can't find bpf_testmod.ko kernel module: %d\n", -errno);
+		fprintf(env._stderr, "Can't find bpf_testmod.ko kernel module: %d\n", -errno);
 		return -ENOENT;
 	}
 	if (finit_module(fd, "", 0)) {
-		fprintf(env.stderr, "Failed to load bpf_testmod.ko into the kernel: %d\n", -errno);
+		fprintf(env._stderr, "Failed to load bpf_testmod.ko into the kernel: %d\n", -errno);
 		close(fd);
 		return -EINVAL;
 	}
@@ -979,7 +979,7 @@ void crash_handler(int signum)
 		env.test_state->error_cnt++;
 		dump_test_log(env.test, env.test_state, true, false);
 	}
-	if (env.stdout)
+	if (env._stdout)
 		stdio_restore();
 	if (env.worker_id != -1)
 		fprintf(stderr, "[%d]: ", env.worker_id);
@@ -1614,12 +1614,12 @@ int main(int argc, char **argv)
 		return -1;
 	}
 
-	env.stdout = stdout;
-	env.stderr = stderr;
+	env._stdout = stdout;
+	env._stderr = stderr;
 
 	env.has_testmod = true;
 	if (!env.list_test_names && load_bpf_testmod()) {
-		fprintf(env.stderr, "WARNING! Selftests relying on bpf_testmod.ko will be skipped.\n");
+		fprintf(env._stderr, "WARNING! Selftests relying on bpf_testmod.ko will be skipped.\n");
 		env.has_testmod = false;
 	}
 
@@ -1696,7 +1696,7 @@ int main(int argc, char **argv)
 		}
 
 		if (env.list_test_names) {
-			fprintf(env.stdout, "%s\n", test->test_name);
+			fprintf(env._stdout, "%s\n", test->test_name);
 			env.succ_cnt++;
 			continue;
 		}
