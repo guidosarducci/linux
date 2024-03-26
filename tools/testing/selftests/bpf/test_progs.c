@@ -10,13 +10,20 @@
 #include <sched.h>
 #include <signal.h>
 #include <string.h>
-#include <execinfo.h> /* backtrace */
 #include <linux/membarrier.h>
 #include <sys/sysinfo.h> /* get_nprocs */
 #include <netinet/in.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+
+#ifdef __GLIBC__
+#include <execinfo.h> /* backtrace */
+#else
+#define backtrace(...) (0)
+#define backtrace_symbols_fd(bt, sz, fd) \
+	dprintf(fd, "<backtrace not supported>\n", bt, sz)
+#endif
 
 static bool verbose(void)
 {
