@@ -511,6 +511,8 @@ static int parse_verif_log(char * const buf, size_t buf_sz, struct verif_stats *
 
 static int process_prog(const char *filename, struct bpf_object *obj, struct bpf_program *prog)
 {
+	const char *base_filename = strrchr(filename, '/') ?
+				    strrchr(filename, '/') + 1 : filename;
 	const char *prog_name = bpf_program__name(prog);
 	size_t buf_sz = sizeof(verif_log_buf);
 	char *buf = verif_log_buf;
@@ -565,13 +567,15 @@ static int process_prog(const char *filename, struct bpf_object *obj, struct bpf
 
 static int process_obj(const char *filename)
 {
+	const char *base_filename = strrchr(filename, '/') ?
+				    strrchr(filename, '/') + 1 : filename;
 	struct bpf_object *obj = NULL, *tobj;
 	struct bpf_program *prog, *tprog, *lprog;
 	libbpf_print_fn_t old_libbpf_print_fn;
 	LIBBPF_OPTS(bpf_object_open_opts, opts);
 	int err = 0, prog_cnt = 0;
 
-	if (!should_process_file(basename(filename))) {
+	if (!should_process_file(base_filename)) {
 		if (env.verbose)
 			printf("Skipping '%s' due to filters...\n", filename);
 		env.files_skipped++;
@@ -585,7 +589,7 @@ static int process_obj(const char *filename)
 	}
 
 	if (!env.quiet && env.out_fmt == RESFMT_TABLE)
-		printf("Processing '%s'...\n", basename(filename));
+		printf("Processing '%s'...\n", base_filename);
 
 	old_libbpf_print_fn = libbpf_set_print(libbpf_print_fn);
 	obj = bpf_object__open_file(filename, &opts);
