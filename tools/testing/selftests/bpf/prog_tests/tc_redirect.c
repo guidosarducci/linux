@@ -33,6 +33,10 @@
 #define TCP_TX_DELAY 37
 #endif
 
+#ifndef SO_TIMESTAMPNS_NEW
+#define SO_TIMESTAMPNS_NEW SO_TIMESTAMPNS
+#endif
+
 #define NS_SRC "ns_src"
 #define NS_FWD "ns_fwd"
 #define NS_DST "ns_dst"

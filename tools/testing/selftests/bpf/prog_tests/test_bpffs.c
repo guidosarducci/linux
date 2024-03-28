@@ -10,6 +10,11 @@
 
 #define TDIR "/sys/kernel/debug"
 
+/* Error if libc missing support for renameat2(). */
+#if !defined(RENAME_EXCHANGE) || !defined(RENAME_NOREPLACE)
+#define renameat2(...) ({ errno = ENOTSUP; -1; })
+#endif
+
 static int read_iter(char *file)
 {
 	/* 1024 should be enough to get contiguous 4 "iter" letters at some point */
