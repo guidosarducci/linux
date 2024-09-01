@@ -952,9 +952,9 @@ static void bpf_object_bswap_progs(struct bpf_object *obj)
 		insn = prog->insns;
 		for (i = 0; i < prog->insns_cnt; i++, insn++)
 			bpf_insn_bswap(insn);
-		pr_debug("prog '%s': converted %zu insns to native byte order\n",
-			 prog->name, prog->insns_cnt);
 	}
+	pr_debug("converted %zu BPF programs to native byte order\n",
+		 obj->nr_programs);
 }
 
 static const struct btf_member *
@@ -1596,10 +1596,8 @@ static int bpf_object__elf_init(struct bpf_object *obj)
 		pr_warn("elf: '%s' has unknown byte order\n", obj->path);
 		goto errout;
 	}
-	/* and preserve outside lifetime of bpf_object_open() */
+	/* and save after bpf_object_open() frees ELF data */
 	obj->byteorder = ehdr->e_ident[EI_DATA];
-
-
 
 	if (elf_getshdrstrndx(elf, &obj->efile.shstrndx)) {
 		pr_warn("elf: failed to get section names section index for %s: %s\n",
@@ -8527,10 +8525,10 @@ static int bpf_object_load(struct bpf_object *obj, int extra_log_level, const ch
 		return libbpf_err(-EINVAL);
 	}
 
-	if (obj->gen_loader)
+	if (obj->gen_loader) {
 		bpf_gen__init(obj->gen_loader, extra_log_level, obj->nr_programs, obj->nr_maps);
-	else if (!is_native_endianness(obj)) {
-		pr_warn("object '%s' is not native endianness\n", obj->name);
+	} else if (!is_native_endianness(obj)) {
+		pr_warn("object '%s': loading non-native endianness is unsupported\n", obj->name);
 		return libbpf_err(-LIBBPF_ERRNO__ENDIAN);
 	}
 

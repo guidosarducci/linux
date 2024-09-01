@@ -1131,17 +1131,14 @@ static bool is_exec_sec(struct dst_sec *sec)
 	       (sec->shdr->sh_flags & SHF_EXECINSTR);
 }
 
-static int exec_sec_bswap(void *raw_data, int size)
+static void exec_sec_bswap(void *raw_data, int size)
 {
 	const int insn_cnt = size / sizeof(struct bpf_insn);
 	struct bpf_insn *insn = raw_data;
 	int i;
 
-	if (size % sizeof(struct bpf_insn))
-		return -EINVAL;
 	for (i = 0; i < insn_cnt; i++, insn++)
 		bpf_insn_bswap(insn);
-	return 0;
 }
 
 static int extend_sec(struct bpf_linker *linker, struct dst_sec *dst, struct src_sec *src)
@@ -2787,18 +2784,9 @@ static int finalize_btf(struct bpf_linker *linker)
 	/* Set .BTF and .BTF.ext output byte order */
 	link_endianness = linker->elf_hdr->e_ident[EI_DATA] == ELFDATA2MSB ?
 			  BTF_BIG_ENDIAN : BTF_LITTLE_ENDIAN;
-	err = btf__set_endianness(linker->btf, link_endianness);
-	if (err) {
-		pr_warn("failed to set .BTF output endianness: %d\n", err);
-		return err;
-	}
-	if (linker->btf_ext) {
-		err = btf_ext__set_endianness(linker->btf_ext, link_endianness);
-		if (err) {
-			pr_warn("failed to set .BTF.ext output endianness: %d\n", err);
-			return err;
-		}
-	}
+	btf__set_endianness(linker->btf, link_endianness);
+	if (linker->btf_ext)
+		btf_ext__set_endianness(linker->btf_ext, link_endianness);
 
 	/* Emit .BTF section */
 	raw_data = btf__raw_data(linker->btf, &raw_sz);

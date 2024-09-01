@@ -432,17 +432,14 @@ void bpf_gen__free(struct bpf_gen *gen)
  * target to avoid runtime problems.
  */
 #define tgt_endian(rval) ({					\
-	typeof(rval) _val;					\
-	if (!gen->swapped_endian)				\
-		_val = (rval);					\
-	else {							\
-		switch (sizeof(rval)) {				\
-		case 1: _val = (rval); break;			\
-		case 2: _val = bswap_16(rval); break;		\
-		case 4: _val = bswap_32(rval); break;		\
-		case 8: _val = bswap_64(rval); break;		\
-		default:_val = (rval);				\
-			pr_warn("unsupported bswap size!\n");	\
+	typeof(rval) _val = (rval);				\
+	if (gen->swapped_endian) {				\
+		switch (sizeof(_val)) {				\
+		case 1: break;					\
+		case 2: _val = bswap_16(_val); break;		\
+		case 4: _val = bswap_32(_val); break;		\
+		case 8: _val = bswap_64(_val); break;		\
+		default: pr_warn("unsupported bswap size!\n");	\
 		}						\
 	}							\
 	_val;							\
@@ -457,12 +454,11 @@ void bpf_gen__load_btf(struct bpf_gen *gen, const void *btf_raw_data,
 
 	memset(&attr, 0, attr_size);
 	btf_data = add_data(gen, btf_raw_data, btf_raw_size);
-	pr_debug("gen: load_btf: off %d size %d\n", btf_data, btf_raw_size);
 
 	attr.btf_size = tgt_endian(btf_raw_size);
 	btf_load_attr = add_data(gen, &attr, attr_size);
-	pr_debug("gen: load_btf: btf_load_attr: off %d size %d\n",
-		 btf_load_attr, attr_size);
+	pr_debug("gen: load_btf: off %d size %d, attr: off %d size %d\n",
+		 btf_data, btf_raw_size, btf_load_attr, attr_size);
 
 	/* populate union bpf_attr with user provided log details */
 	move_ctx2blob(gen, attr_field(btf_load_attr, btf_log_level), 4,
@@ -506,12 +502,11 @@ void bpf_gen__map_create(struct bpf_gen *gen,
 	attr.btf_key_type_id = tgt_endian(map_attr->btf_key_type_id);
 	attr.btf_value_type_id = tgt_endian(map_attr->btf_value_type_id);
 
-	pr_debug("gen: map_create: %s idx %d type %d value_type_id %d\n",
-		 map_name, map_idx, map_type, map_attr->btf_value_type_id);
-
 	map_create_attr = add_data(gen, &attr, attr_size);
-	pr_debug("gen: map_create: map_create_attr: off %d size %d\n",
+	pr_debug("gen: map_create: %s idx %d type %d value_type_id %d, attr: off %d size %d\n",
+		 map_name, map_idx, map_type, map_attr->btf_value_type_id,
 		 map_create_attr, attr_size);
+
 	if (map_attr->btf_value_type_id)
 		/* populate union bpf_attr with btf_fd saved in the stack earlier */
 		move_stack2blob(gen, attr_field(map_create_attr, btf_fd), 4,
@@ -1001,14 +996,12 @@ void bpf_gen__prog_load(struct bpf_gen *gen,
 	union bpf_attr attr;
 
 	memset(&attr, 0, attr_size);
-	pr_debug("gen: prog_load: type %d insns_cnt %zd progi_idx %d\n",
-		 prog_type, insn_cnt, prog_idx);
 	/* add license string to blob of bytes */
 	license_off = add_data(gen, license, strlen(license) + 1);
 	/* add insns to blob of bytes */
 	insns_off = add_data(gen, insns, insn_cnt * sizeof(struct bpf_insn));
-	pr_debug("gen: prog_load: license off %d insn off %d\n",
-		 license_off, insns_off);
+	pr_debug("gen: prog_load: prog_idx %d type %d insn off %d insns_cnt %zd license off %d\n",
+		 prog_idx, prog_type, insns_off, insn_cnt, license_off);
 
 	/* convert blob insns to target endianness */
 	if (gen->swapped_endian) {
@@ -1062,7 +1055,7 @@ void bpf_gen__prog_load(struct bpf_gen *gen,
 
 	libbpf_strlcpy(attr.prog_name, prog_name, sizeof(attr.prog_name));
 	prog_load_attr = add_data(gen, &attr, attr_size);
-	pr_debug("gen: prog_load: prog_load_attr: off %d size %d\n",
+	pr_debug("gen: prog_load: attr: off %d size %d\n",
 		 prog_load_attr, attr_size);
 
 	/* populate union bpf_attr with a pointer to license */
@@ -1131,10 +1124,11 @@ void bpf_gen__map_update_elem(struct bpf_gen *gen, int map_idx, void *pvalue,
 	int zero = 0;
 
 	memset(&attr, 0, attr_size);
-	pr_debug("gen: map_update_elem: idx %d\n", map_idx);
 
 	value = add_data(gen, pvalue, value_size);
 	key = add_data(gen, &zero, sizeof(zero));
+	pr_debug("gen: map_update_elem: idx %d, value: off %d size %d\n",
+		 map_idx, value, value_size);
 
 	/* if (map_desc[map_idx].initial_value) {
 	 *    if (ctx->flags & BPF_SKEL_KERNEL)
@@ -1159,7 +1153,7 @@ void bpf_gen__map_update_elem(struct bpf_gen *gen, int map_idx, void *pvalue,
 	emit(gen, BPF_EMIT_CALL(BPF_FUNC_probe_read_kernel));
 
 	map_update_attr = add_data(gen, &attr, attr_size);
-	pr_debug("gen: map_update_elem: map_update_attr: off %d size %d\n",
+	pr_debug("gen: map_update_elem: attr: off %d size %d\n",
 		 map_update_attr, attr_size);
 	move_blob2blob(gen, attr_field(map_update_attr, map_fd), 4,
 		       blob_fd_array_off(gen, map_idx));
@@ -1180,15 +1174,13 @@ void bpf_gen__populate_outer_map(struct bpf_gen *gen, int outer_map_idx, int slo
 	int tgt_slot;
 
 	memset(&attr, 0, attr_size);
-	pr_debug("gen: populate_outer_map: outer %d key %d inner %d\n",
-		 outer_map_idx, slot, inner_map_idx);
 
 	tgt_slot = tgt_endian(slot);
 	key = add_data(gen, &tgt_slot, sizeof(tgt_slot));
 
 	map_update_attr = add_data(gen, &attr, attr_size);
-	pr_debug("gen: populate_outer_map: map_update_attr: off %d size %d\n",
-		 map_update_attr, attr_size);
+	pr_debug("gen: populate_outer_map: outer %d key %d inner %d, attr: off %d size %d\n",
+		 outer_map_idx, slot, inner_map_idx, map_update_attr, attr_size);
 	move_blob2blob(gen, attr_field(map_update_attr, map_fd), 4,
 		       blob_fd_array_off(gen, outer_map_idx));
 	emit_rel_store(gen, attr_field(map_update_attr, key), key);
@@ -1209,10 +1201,9 @@ void bpf_gen__map_freeze(struct bpf_gen *gen, int map_idx)
 	union bpf_attr attr;
 
 	memset(&attr, 0, attr_size);
-	pr_debug("gen: map_freeze: idx %d\n", map_idx);
 	map_freeze_attr = add_data(gen, &attr, attr_size);
-	pr_debug("gen: map_freeze: map_update_attr: off %d size %d\n",
-		 map_freeze_attr, attr_size);
+	pr_debug("gen: map_freeze: idx %d, attr: off %d size %d\n",
+		 map_idx, map_freeze_attr, attr_size);
 	move_blob2blob(gen, attr_field(map_freeze_attr, map_fd), 4,
 		       blob_fd_array_off(gen, map_idx));
 	/* emit MAP_FREEZE command */
