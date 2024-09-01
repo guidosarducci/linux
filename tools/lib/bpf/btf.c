@@ -3043,9 +3043,11 @@ static void btf_ext_bswap_hdr(struct btf_ext *btf_ext, __u32 hdr_len)
 }
 
 /* Swap byte-order of a generic info subsection */
-static void info_subsec_bswap(const struct btf_ext_header *hdr, bool native,
+static void info_subsec_bswap(const struct btf_ext *btf_ext,
 			      __u32 off, __u32 len, anon_info_bswap_fn_t bswap)
 {
+	const struct btf_ext_header *hdr = btf_ext->hdr;
+	const bool is_native = btf_ext->swapped_endian;
 	__u32 left, i, *rs, rec_size, num_info;
 	struct btf_ext_info_sec *si;
 	void *p;
@@ -3055,11 +3057,11 @@ static void info_subsec_bswap(const struct btf_ext_header *hdr, bool native,
 
 	rs = (void *)hdr + hdr->hdr_len + off;	/* record size */
 	si = (void *)rs + sizeof(__u32);	/* sec info #1 */
-	rec_size = native ? *rs : bswap_32(*rs);
+	rec_size = is_native ? *rs : bswap_32(*rs);
 	*rs = bswap_32(*rs);
 	left = len - sizeof(__u32);
 	while (left > 0) {
-		num_info = native ? si->num_info : bswap_32(si->num_info);
+		num_info = is_native ? si->num_info : bswap_32(si->num_info);
 		si->sec_name_off = bswap_32(si->sec_name_off);
 		si->num_info = bswap_32(si->num_info);
 		left -= offsetof(struct btf_ext_info_sec, data);
@@ -3067,7 +3069,7 @@ static void info_subsec_bswap(const struct btf_ext_header *hdr, bool native,
 		for (i = 0; i < num_info; i++)	/* list of records */
 			p += bswap(p);
 		si = p;
-		left -=  rec_size * num_info;
+		left -= rec_size * num_info;
 	}
 }
 
@@ -3075,33 +3077,33 @@ static void info_subsec_bswap(const struct btf_ext_header *hdr, bool native,
  * Swap endianness of the whole info segment in a BTF.ext data section:
  *   - requires BTF.ext header data in native byte order
  *   - only support info structs from BTF version 1
- *   - native: current info data is native endianness
  */
-static void btf_ext_bswap_info(struct btf_ext *btf_ext, bool native)
+static void btf_ext_bswap_info(struct btf_ext *btf_ext)
 {
 	const struct btf_ext_header *hdr = btf_ext->hdr;
 
 	/* Swap func_info subsection byte-order */
-	info_subsec_bswap(hdr, native, hdr->func_info_off, hdr->func_info_len,
+	info_subsec_bswap(btf_ext, hdr->func_info_off, hdr->func_info_len,
 			  (anon_info_bswap_fn_t)bpf_func_info_bswap);
 
 	/* Swap line_info subsection byte-order */
-	info_subsec_bswap(hdr, native, hdr->line_info_off, hdr->line_info_len,
+	info_subsec_bswap(btf_ext, hdr->line_info_off, hdr->line_info_len,
 			  (anon_info_bswap_fn_t)bpf_line_info_bswap);
 
 	/* Swap core_relo subsection byte-order (if present) */
 	if (hdr->hdr_len < offsetofend(struct btf_ext_header, core_relo_len))
 		return;
 
-	info_subsec_bswap(hdr, native, hdr->core_relo_off, hdr->core_relo_len,
+	info_subsec_bswap(btf_ext, hdr->core_relo_off, hdr->core_relo_len,
 			  (anon_info_bswap_fn_t)bpf_core_relo_bswap);
 }
 
 /* Validate hdr data & info sections, convert to native endianness */
 static int btf_ext_parse(struct btf_ext *btf_ext)
 {
-	struct btf_ext_header *hdr = btf_ext->hdr;
 	__u32 hdr_len, info_size, data_size = btf_ext->data_size;
+	struct btf_ext_header *hdr = btf_ext->hdr;
+	bool swapped_endian = false;
 
 	if (data_size < offsetofend(struct btf_ext_header, hdr_len)) {
 		pr_debug("BTF.ext header too short\n");
@@ -3110,7 +3112,7 @@ static int btf_ext_parse(struct btf_ext *btf_ext)
 
 	hdr_len = hdr->hdr_len;
 	if (hdr->magic == bswap_16(BTF_MAGIC)) {
-		btf_ext->swapped_endian = true;
+		swapped_endian = true;
 		hdr_len = bswap_32(hdr_len);
 	} else if (hdr->magic != BTF_MAGIC) {
 		pr_debug("Invalid BTF.ext magic:%x\n", hdr->magic);
@@ -3143,7 +3145,7 @@ static int btf_ext_parse(struct btf_ext *btf_ext)
 	}
 
 	/* Keep hdr native byte-order in memory for introspection */
-	if (btf_ext->swapped_endian)
+	if (swapped_endian)
 		btf_ext_bswap_hdr(btf_ext, hdr_len);
 
 	/* Basic info section consistency checks*/
@@ -3161,9 +3163,14 @@ static int btf_ext_parse(struct btf_ext *btf_ext)
 	}
 
 	/* Keep infos native byte-order in memory for introspection */
-	if (btf_ext->swapped_endian)
-		btf_ext_bswap_info(btf_ext, !btf_ext->swapped_endian);
-
+	if (swapped_endian)
+		btf_ext_bswap_info(btf_ext);
+/*
+ * Set btf_ext->swapped_endian only after all header and info data has
+ * been swapped, allowing btf_ext_bswap_hdr() or btf_ext_bswap_info()
+ * to determine if their data is in native byte order.
+ */
+	btf_ext->swapped_endian = swapped_endian;
 	return 0;
 }
 
@@ -3243,7 +3250,7 @@ static void *btf_ext_raw_data(const struct btf_ext *btf_ext_ro, __u32 *size,
 	memcpy(data, btf_ext->data, data_sz);
 
 	if (swap_endian) {
-		btf_ext_bswap_info(btf_ext, true);
+		btf_ext_bswap_info(btf_ext);
 		btf_ext_bswap_hdr(btf_ext, btf_ext->hdr->hdr_len);
 		btf_ext->data_swapped = data;
 	}
