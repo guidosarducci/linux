@@ -7,7 +7,7 @@
 #endif
 #define BPF_SKB_MAX_LEN (PAGE_SIZE << 2)
 
-long change_tail_ret = 1;
+long long change_tail_ret = 1;
 
 static __always_inline struct iphdr *parse_ip_header(struct __sk_buff *skb, int *ip_proto)
 {

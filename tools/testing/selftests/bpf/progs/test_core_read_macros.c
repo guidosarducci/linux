@@ -19,11 +19,11 @@ struct callback_head___shuffled k_core_in = {};
 struct callback_head *u_probe_in = 0;
 struct callback_head___shuffled *u_core_in = 0;
 
-long k_probe_out = 0;
-long u_probe_out = 0;
+int64_t k_probe_out = 0;
+int64_t u_probe_out = 0;
 
-long k_core_out = 0;
-long u_core_out = 0;
+int64_t k_core_out = 0;
+int64_t u_core_out = 0;
 
 int my_pid = 0;
 

@@ -8,7 +8,7 @@
 
 char _license[] SEC("license") = "GPL";
 
-const void *user_ptr = NULL;
+__u64 user_ptr = 0;
 
 struct elem {
 	char data[128];

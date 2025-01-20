@@ -18,7 +18,7 @@ struct {
 	__type(value, struct arr_elem);
 } arrmap SEC(".maps");
 
-long value;
+s64 value;
 
 struct bpf_spin_lock lock __hidden SEC(".data.A");
 struct bpf_res_spin_lock res_lock __hidden SEC(".data.B");

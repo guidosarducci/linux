@@ -445,7 +445,7 @@ static void do_bench_test(struct kprobe_multi_empty *skel, struct bpf_kprobe_mul
 	attach_delta = (attach_end_ns - attach_start_ns) / 1000000000.0;
 	detach_delta = (detach_end_ns - detach_start_ns) / 1000000000.0;
 
-	printf("%s: found %lu functions\n", __func__, opts->cnt);
+	printf("%s: found %zu functions\n", __func__, opts->cnt);
 	printf("%s: attached in %7.3lfs\n", __func__, attach_delta);
 	printf("%s: detached in %7.3lfs\n", __func__, detach_delta);
 }

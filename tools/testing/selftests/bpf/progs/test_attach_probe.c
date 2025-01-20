@@ -21,7 +21,7 @@ int uprobe_byname3_res = 0;
 int uretprobe_byname3_sleepable_res = 0;
 int uretprobe_byname3_str_sleepable_res = 0;
 int uretprobe_byname3_res = 0;
-void *user_ptr = 0;
+u32  user_addr = 0;
 
 int bpf_copy_from_user_str(void *dst, u32, const void *, u64) __weak __ksym;
 
@@ -89,7 +89,7 @@ static __always_inline bool verify_sleepable_user_copy(void)
 {
 	char data[9];
 
-	bpf_copy_from_user(data, sizeof(data), user_ptr);
+	bpf_copy_from_user(data, sizeof(data), (void *)(uintptr_t)user_addr);
 	return bpf_strncmp(data, sizeof(data), "test_data") == 0;
 }
 
@@ -102,28 +102,28 @@ static __always_inline bool verify_sleepable_user_copy_str(void)
 	char data_short[4];
 	char data_short_pad[4];
 
-	ret = bpf_copy_from_user_str(data_short, sizeof(data_short), user_ptr, 0);
+	ret = bpf_copy_from_user_str(data_short, sizeof(data_short), (void *)(uintptr_t)user_addr, 0);
 
 	if (bpf_strncmp(data_short, 4, "tes\0") != 0 || ret != 4)
 		return false;
 
-	ret = bpf_copy_from_user_str(data_short_pad, sizeof(data_short_pad), user_ptr, BPF_F_PAD_ZEROS);
+	ret = bpf_copy_from_user_str(data_short_pad, sizeof(data_short_pad), (void *)(uintptr_t)user_addr, BPF_F_PAD_ZEROS);
 
 	if (bpf_strncmp(data_short, 4, "tes\0") != 0 || ret != 4)
 		return false;
 
 	/* Make sure this passes the verifier */
-	ret = bpf_copy_from_user_str(data_long, dynamic_sz & sizeof(data_long), user_ptr, 0);
+	ret = bpf_copy_from_user_str(data_long, dynamic_sz & sizeof(data_long), (void *)(uintptr_t)user_addr, 0);
 
 	if (ret != 0)
 		return false;
 
-	ret = bpf_copy_from_user_str(data_long, sizeof(data_long), user_ptr, 0);
+	ret = bpf_copy_from_user_str(data_long, sizeof(data_long), (void *)(uintptr_t)user_addr, 0);
 
 	if (bpf_strncmp(data_long, 10, "test_data\0") != 0 || ret != 10)
 		return false;
 
-	ret = bpf_copy_from_user_str(data_long_pad, sizeof(data_long_pad), user_ptr, BPF_F_PAD_ZEROS);
+	ret = bpf_copy_from_user_str(data_long_pad, sizeof(data_long_pad), (void *)(uintptr_t)user_addr, BPF_F_PAD_ZEROS);
 
 	if (bpf_strncmp(data_long_pad, 10, "test_data\0") != 0 || ret != 10 || data_long_pad[19] != '\0')
 		return false;
@@ -133,7 +133,7 @@ static __always_inline bool verify_sleepable_user_copy_str(void)
 	if (ret > 0 || data_long_err[19] != '\0')
 		return false;
 
-	ret = bpf_copy_from_user_str(data_long, sizeof(data_long), user_ptr, 2);
+	ret = bpf_copy_from_user_str(data_long, sizeof(data_long), (void *)(uintptr_t)user_addr, 2);
 
 	if (ret != -EINVAL)
 		return false;

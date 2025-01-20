@@ -905,7 +905,7 @@ out:
 	return XDP_DROP;
 }
 
-void *user_ptr;
+u64 user_addr;
 /* Contains the copy of the data pointed by user_ptr.
  * Size 384 to make it not fit into a single kernel chunk when copying
  * but less than the maximum bpf stack size (512).
@@ -932,10 +932,11 @@ __u32 xdp_near_frag_end_offset(void)
  * of type bpf_read_dynptr_fn_t to prevent compiler from generating
  * indirect calls that make program fail to load with "unknown opcode" error.
  */
-static __always_inline void test_dynptr_probe(void *ptr, bpf_read_dynptr_fn_t bpf_read_dynptr_fn)
+static __always_inline void test_dynptr_probe(u64 addr, bpf_read_dynptr_fn_t bpf_read_dynptr_fn)
 {
 	char buf[sizeof(expected_str)];
 	struct bpf_dynptr ptr_buf;
+	void *ptr = (void *)(uintptr_t)addr;
 	int i;
 
 	if (bpf_get_current_pid_tgid() >> 32 != pid)
@@ -961,11 +962,12 @@ static __always_inline void test_dynptr_probe(void *ptr, bpf_read_dynptr_fn_t bp
 	bpf_ringbuf_discard_dynptr(&ptr_buf, 0);
 }
 
-static __always_inline void test_dynptr_probe_str(void *ptr,
+static __always_inline void test_dynptr_probe_str(u64 addr,
 						  bpf_read_dynptr_fn_t bpf_read_dynptr_fn)
 {
 	char buf[sizeof(expected_str)];
 	struct bpf_dynptr ptr_buf;
+	void *ptr = (void *)(uintptr_t)addr;
 	__u32 cnt, i;
 
 	if (bpf_get_current_pid_tgid() >> 32 != pid)
@@ -991,11 +993,12 @@ static __always_inline void test_dynptr_probe_str(void *ptr,
 	bpf_ringbuf_discard_dynptr(&ptr_buf, 0);
 }
 
-static __always_inline void test_dynptr_probe_xdp(struct xdp_md *xdp, void *ptr,
+static __always_inline void test_dynptr_probe_xdp(struct xdp_md *xdp, u64 addr,
 						  bpf_read_dynptr_fn_t bpf_read_dynptr_fn)
 {
 	struct bpf_dynptr ptr_xdp;
 	char buf[sizeof(expected_str)];
+	void *ptr = (void *)(uintptr_t)addr;
 	__u32 off, i;
 
 	if (bpf_get_current_pid_tgid() >> 32 != pid)
@@ -1019,11 +1022,12 @@ static __always_inline void test_dynptr_probe_xdp(struct xdp_md *xdp, void *ptr,
 	}
 }
 
-static __always_inline void test_dynptr_probe_str_xdp(struct xdp_md *xdp, void *ptr,
+static __always_inline void test_dynptr_probe_str_xdp(struct xdp_md *xdp, u64 addr,
 						      bpf_read_dynptr_fn_t bpf_read_dynptr_fn)
 {
 	struct bpf_dynptr ptr_xdp;
 	char buf[sizeof(expected_str)];
+	void *ptr = (void *)(uintptr_t)addr;
 	__u32 cnt, off, i;
 
 	if (bpf_get_current_pid_tgid() >> 32 != pid)
@@ -1058,50 +1062,50 @@ static __always_inline void test_dynptr_probe_str_xdp(struct xdp_md *xdp, void *
 SEC("xdp")
 int test_probe_read_user_dynptr(struct xdp_md *xdp)
 {
-	test_dynptr_probe(user_ptr, bpf_probe_read_user_dynptr);
+	test_dynptr_probe(user_addr, bpf_probe_read_user_dynptr);
 	if (!err)
-		test_dynptr_probe_xdp(xdp, user_ptr, bpf_probe_read_user_dynptr);
+		test_dynptr_probe_xdp(xdp, user_addr, bpf_probe_read_user_dynptr);
 	return XDP_PASS;
 }
 
 SEC("xdp")
 int test_probe_read_kernel_dynptr(struct xdp_md *xdp)
 {
-	test_dynptr_probe(expected_str, bpf_probe_read_kernel_dynptr);
+	test_dynptr_probe((u64)(uintptr_t)expected_str, bpf_probe_read_kernel_dynptr);
 	if (!err)
-		test_dynptr_probe_xdp(xdp, expected_str, bpf_probe_read_kernel_dynptr);
+		test_dynptr_probe_xdp(xdp, (u64)(uintptr_t)expected_str, bpf_probe_read_kernel_dynptr);
 	return XDP_PASS;
 }
 
 SEC("xdp")
 int test_probe_read_user_str_dynptr(struct xdp_md *xdp)
 {
-	test_dynptr_probe_str(user_ptr, bpf_probe_read_user_str_dynptr);
+	test_dynptr_probe_str(user_addr, bpf_probe_read_user_str_dynptr);
 	if (!err)
-		test_dynptr_probe_str_xdp(xdp, user_ptr, bpf_probe_read_user_str_dynptr);
+		test_dynptr_probe_str_xdp(xdp, user_addr, bpf_probe_read_user_str_dynptr);
 	return XDP_PASS;
 }
 
 SEC("xdp")
 int test_probe_read_kernel_str_dynptr(struct xdp_md *xdp)
 {
-	test_dynptr_probe_str(expected_str, bpf_probe_read_kernel_str_dynptr);
+	test_dynptr_probe_str((u64)(uintptr_t)expected_str, bpf_probe_read_kernel_str_dynptr);
 	if (!err)
-		test_dynptr_probe_str_xdp(xdp, expected_str, bpf_probe_read_kernel_str_dynptr);
+		test_dynptr_probe_str_xdp(xdp, (u64)(uintptr_t)expected_str, bpf_probe_read_kernel_str_dynptr);
 	return XDP_PASS;
 }
 
 SEC("fentry.s/" SYS_PREFIX "sys_nanosleep")
 int test_copy_from_user_dynptr(void *ctx)
 {
-	test_dynptr_probe(user_ptr, bpf_copy_from_user_dynptr);
+	test_dynptr_probe(user_addr, bpf_copy_from_user_dynptr);
 	return 0;
 }
 
 SEC("fentry.s/" SYS_PREFIX "sys_nanosleep")
 int test_copy_from_user_str_dynptr(void *ctx)
 {
-	test_dynptr_probe_str(user_ptr, bpf_copy_from_user_str_dynptr);
+	test_dynptr_probe_str(user_addr, bpf_copy_from_user_str_dynptr);
 	return 0;
 }
 
@@ -1124,13 +1128,13 @@ static int bpf_copy_data_from_user_task_str(struct bpf_dynptr *dptr, u64 off,
 SEC("fentry.s/" SYS_PREFIX "sys_nanosleep")
 int test_copy_from_user_task_dynptr(void *ctx)
 {
-	test_dynptr_probe(user_ptr, bpf_copy_data_from_user_task);
+	test_dynptr_probe(user_addr, bpf_copy_data_from_user_task);
 	return 0;
 }
 
 SEC("fentry.s/" SYS_PREFIX "sys_nanosleep")
 int test_copy_from_user_task_str_dynptr(void *ctx)
 {
-	test_dynptr_probe_str(user_ptr, bpf_copy_data_from_user_task_str);
+	test_dynptr_probe_str(user_addr, bpf_copy_data_from_user_task_str);
 	return 0;
 }

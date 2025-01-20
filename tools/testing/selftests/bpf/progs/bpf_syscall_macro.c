@@ -8,24 +8,24 @@
 #include "bpf_misc.h"
 
 int arg1 = 0;
-unsigned long arg2 = 0;
-unsigned long arg3 = 0;
-unsigned long arg4_cx = 0;
-unsigned long arg4 = 0;
-unsigned long arg5 = 0;
+__u64 arg2 = 0;
+__u64 arg3 = 0;
+__u64 arg4_cx = 0;
+__u64 arg4 = 0;
+__u64 arg5 = 0;
 
 int arg1_core = 0;
-unsigned long arg2_core = 0;
-unsigned long arg3_core = 0;
-unsigned long arg4_core_cx = 0;
-unsigned long arg4_core = 0;
-unsigned long arg5_core = 0;
+__u64 arg2_core = 0;
+__u64 arg3_core = 0;
+__u64 arg4_core_cx = 0;
+__u64 arg4_core = 0;
+__u64 arg5_core = 0;
 
 int option_syscall = 0;
-unsigned long arg2_syscall = 0;
-unsigned long arg3_syscall = 0;
-unsigned long arg4_syscall = 0;
-unsigned long arg5_syscall = 0;
+__u64 arg2_syscall = 0;
+__u64 arg3_syscall = 0;
+__u64 arg4_syscall = 0;
+__u64 arg5_syscall = 0;
 
 const volatile pid_t filter_pid = 0;
 

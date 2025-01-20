@@ -193,11 +193,11 @@ static int spawn_thread(struct child *child)
 
 static void uprobe_multi_test_run(struct uprobe_multi *skel, struct child *child)
 {
-	skel->bss->uprobe_multi_func_1_addr = (__u64) uprobe_multi_func_1;
-	skel->bss->uprobe_multi_func_2_addr = (__u64) uprobe_multi_func_2;
-	skel->bss->uprobe_multi_func_3_addr = (__u64) uprobe_multi_func_3;
+	skel->bss->uprobe_multi_func_1_addr = (uintptr_t) uprobe_multi_func_1;
+	skel->bss->uprobe_multi_func_2_addr = (uintptr_t) uprobe_multi_func_2;
+	skel->bss->uprobe_multi_func_3_addr = (uintptr_t) uprobe_multi_func_3;
 
-	skel->bss->user_ptr = test_data;
+	skel->bss->user_addr = (uintptr_t)test_data;
 
 	/*
 	 * Disable pid check in bpf program if we are pid filter test,
@@ -1130,16 +1130,16 @@ static void test_session_skel_api(void)
 		goto cleanup;
 
 	skel->bss->pid = getpid();
-	skel->bss->user_ptr = test_data;
+	skel->bss->user_addr = (uintptr_t)test_data;
 
 	err = uprobe_multi_session__attach(skel);
 	if (!ASSERT_OK(err, "uprobe_multi_session__attach"))
 		goto cleanup;
 
 	/* trigger all probes */
-	skel->bss->uprobe_multi_func_1_addr = (__u64) uprobe_multi_func_1;
-	skel->bss->uprobe_multi_func_2_addr = (__u64) uprobe_multi_func_2;
-	skel->bss->uprobe_multi_func_3_addr = (__u64) uprobe_multi_func_3;
+	skel->bss->uprobe_multi_func_1_addr = (uintptr_t) uprobe_multi_func_1;
+	skel->bss->uprobe_multi_func_2_addr = (uintptr_t) uprobe_multi_func_2;
+	skel->bss->uprobe_multi_func_3_addr = (uintptr_t) uprobe_multi_func_3;
 
 	uprobe_multi_func_1();
 	uprobe_multi_func_2();

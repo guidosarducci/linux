@@ -5,7 +5,7 @@
 
 char _license[] SEC("license") = "GPL";
 
-unsigned long last_sym_value = 0;
+uint64_t last_sym_value = 0;
 
 static inline char to_lower(char c)
 {

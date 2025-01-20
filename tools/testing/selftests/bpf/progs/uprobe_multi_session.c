@@ -15,7 +15,7 @@ __u64 uprobe_multi_func_3_addr = 0;
 __u64 uprobe_session_result[3] = {};
 __u64 uprobe_multi_sleep_result = 0;
 
-void *user_ptr = 0;
+__u64 user_addr = 0;
 int pid = 0;
 
 static int uprobe_multi_check(void *ctx, bool is_return)
@@ -58,7 +58,7 @@ static __always_inline bool verify_sleepable_user_copy(void)
 {
 	char data[9];
 
-	bpf_copy_from_user(data, sizeof(data), user_ptr);
+	bpf_copy_from_user(data, sizeof(data), (void *)user_addr);
 	return bpf_strncmp(data, sizeof(data), "test_data") == 0;
 }
 

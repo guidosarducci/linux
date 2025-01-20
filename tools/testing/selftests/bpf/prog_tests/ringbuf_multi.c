@@ -132,12 +132,12 @@ void test_ringbuf_multi(void)
 	if (CHECK(err < 0, "extra_samples", "poll result: %d\n", err))
 		goto cleanup;
 
-	CHECK(skel->bss->dropped != 0, "err_dropped", "exp %ld, got %ld\n",
-	      0L, skel->bss->dropped);
-	CHECK(skel->bss->skipped != 1, "err_skipped", "exp %ld, got %ld\n",
-	      1L, skel->bss->skipped);
-	CHECK(skel->bss->total != 2, "err_total", "exp %ld, got %ld\n",
-	      2L, skel->bss->total);
+	CHECK(skel->bss->dropped != 0, "err_dropped", "exp %lld, got %lld\n",
+	      0LL, skel->bss->dropped);
+	CHECK(skel->bss->skipped != 1, "err_skipped", "exp %lld, got %lld\n",
+	      1LL, skel->bss->skipped);
+	CHECK(skel->bss->total != 2, "err_total", "exp %lld, got %lld\n",
+	      2LL, skel->bss->total);
 
 cleanup:
 	if (proto_fd >= 0)

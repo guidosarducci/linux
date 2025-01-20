@@ -94,7 +94,7 @@ static void task_work_run(const char *prog_name, const char *map_name)
 	if (!ASSERT_OK_PTR(prog, "prog_name"))
 		goto cleanup;
 	bpf_program__set_autoload(prog, true);
-	skel->bss->user_ptr = (char *)user_string;
+	skel->bss->user_ptr = (uintptr_t)(char *)user_string;
 
 	err = task_work__load(skel);
 	if (!ASSERT_OK(err, "skel_load"))

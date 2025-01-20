@@ -607,7 +607,7 @@ int loop_inside_iter_volatile_limit(const void *ctx)
 #define ARR_LONG_SZ 1000
 
 SEC(".data.arr_long")
-long arr_long[ARR_LONG_SZ];
+long long arr_long[ARR_LONG_SZ];
 
 SEC("socket")
 __success

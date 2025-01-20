@@ -380,8 +380,8 @@ static void test_task_sleepable(void)
 	err = read(data_pipe[0], &data, sizeof(data));
 	ASSERT_EQ(err, sizeof(data), "read_check");
 
-	skel->bss->user_ptr = data[0];
-	skel->bss->user_ptr_long = data[1];
+	skel->bss->user_ptr = (uintptr_t)data[0];
+	skel->bss->user_ptr_long = (uintptr_t)data[1];
 	skel->bss->pid = pid;
 
 	do_dummy_read(skel->progs.dump_task_sleepable);

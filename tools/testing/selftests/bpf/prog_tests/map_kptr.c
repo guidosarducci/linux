@@ -118,7 +118,7 @@ exit:
 
 static int kern_sync_rcu_tasks_trace(struct rcu_tasks_trace_gp *rcu)
 {
-	long gp_seq = READ_ONCE(rcu->bss->gp_seq);
+	long long gp_seq = READ_ONCE(rcu->bss->gp_seq);
 	LIBBPF_OPTS(bpf_test_run_opts, opts);
 
 	if (!ASSERT_OK(bpf_prog_test_run_opts(bpf_program__fd(rcu->progs.do_call_rcu_tasks_trace),

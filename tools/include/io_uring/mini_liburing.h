@@ -240,7 +240,7 @@ static inline void io_uring_prep_cmd(struct io_uring_sqe *sqe, int op,
 
 	sqe->level = level;
 	sqe->optname = optname;
-	sqe->optval = (unsigned long long)optval;
+	sqe->optval = (uintptr_t)optval;
 	sqe->optlen = optlen;
 }
 

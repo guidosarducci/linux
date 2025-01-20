@@ -65,8 +65,8 @@ struct map_value {
  * (with no node_data struct defined)
  * Had to do the same w/ bpf_kfunc_call_test_release below
  */
-struct node_data *just_here_because_btf_bug;
-struct refcounted_node *just_here_because_btf_bug2;
+//struct node_data *just_here_because_btf_bug;
+//struct refcounted_node *just_here_because_btf_bug2;
 
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);

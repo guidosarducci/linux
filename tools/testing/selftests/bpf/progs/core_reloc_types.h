@@ -1225,10 +1225,10 @@ struct core_reloc_enum64val_output {
 	bool signed_val2_exists;
 	bool signed_val3_exists;
 
-	long unsigned_val1;
-	long unsigned_val2;
-	long signed_val1;
-	long signed_val2;
+	uint64_t unsigned_val1;
+	uint64_t unsigned_val2;
+	int64_t signed_val1;
+	int64_t signed_val2;
 };
 
 enum named_enum {

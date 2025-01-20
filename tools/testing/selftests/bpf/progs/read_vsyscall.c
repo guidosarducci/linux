@@ -7,7 +7,7 @@
 #include "bpf_misc.h"
 
 int target_pid = 0;
-void *user_ptr = 0;
+u32  user_ptr = 0;
 int read_ret[10];
 
 char _license[] SEC("license") = "GPL";
@@ -27,12 +27,12 @@ int do_probe_read(void *ctx)
 	if ((bpf_get_current_pid_tgid() >> 32) != target_pid)
 		return 0;
 
-	read_ret[0] = bpf_probe_read_kernel(buf, sizeof(buf), user_ptr);
-	read_ret[1] = bpf_probe_read_kernel_str(buf, sizeof(buf), user_ptr);
-	read_ret[2] = bpf_probe_read(buf, sizeof(buf), user_ptr);
-	read_ret[3] = bpf_probe_read_str(buf, sizeof(buf), user_ptr);
-	read_ret[4] = bpf_probe_read_user(buf, sizeof(buf), user_ptr);
-	read_ret[5] = bpf_probe_read_user_str(buf, sizeof(buf), user_ptr);
+	read_ret[0] = bpf_probe_read_kernel(buf, sizeof(buf), (void *)(uintptr_t)user_ptr);
+	read_ret[1] = bpf_probe_read_kernel_str(buf, sizeof(buf), (void *)(uintptr_t)user_ptr);
+	read_ret[2] = bpf_probe_read(buf, sizeof(buf), (void *)(uintptr_t)user_ptr);
+	read_ret[3] = bpf_probe_read_str(buf, sizeof(buf), (void *)(uintptr_t)user_ptr);
+	read_ret[4] = bpf_probe_read_user(buf, sizeof(buf), (void *)(uintptr_t)user_ptr);
+	read_ret[5] = bpf_probe_read_user_str(buf, sizeof(buf), (void *)(uintptr_t)user_ptr);
 
 	return 0;
 }
@@ -45,13 +45,13 @@ int do_copy_from_user(void *ctx)
 	if ((bpf_get_current_pid_tgid() >> 32) != target_pid)
 		return 0;
 
-	read_ret[6] = bpf_copy_from_user(buf, sizeof(buf), user_ptr);
-	read_ret[7] = bpf_copy_from_user_task(buf, sizeof(buf), user_ptr,
+	read_ret[6] = bpf_copy_from_user(buf, sizeof(buf), (void *)(uintptr_t)user_ptr);
+	read_ret[7] = bpf_copy_from_user_task(buf, sizeof(buf), (void *)(uintptr_t)user_ptr,
 					      bpf_get_current_task_btf(), 0);
-	read_ret[8] = bpf_copy_from_user_str((char *)buf, sizeof(buf), user_ptr, 0);
+	read_ret[8] = bpf_copy_from_user_str((char *)buf, sizeof(buf), (void *)(uintptr_t)user_ptr, 0);
 	read_ret[9] = bpf_copy_from_user_task_str((char *)buf,
 						  sizeof(buf),
-						  user_ptr,
+						  (void *)(uintptr_t)user_ptr,
 						  bpf_get_current_task_btf(),
 						  0);
 

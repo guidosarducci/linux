@@ -141,12 +141,13 @@ struct var_filemod_data_t {
 	char payload[MAX_FILEMOD_PAYLOAD_LEN];
 };
 
+// This doesn't even need to be mapped to user space!
 struct profiler_config_struct {
 	bool fetch_cgroups_from_bpf;
-	ino_t cgroup_fs_inode;
-	ino_t cgroup_login_session_inode;
+	uint64_t cgroup_fs_inode;
+	uint64_t cgroup_login_session_inode;
 	uint64_t kill_signals_mask;
-	ino_t inode_filter;
+	uint64_t inode_filter;
 	uint32_t stale_info_secs;
 	bool use_variable_buffers;
 	bool read_environ_from_exec;

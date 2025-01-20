@@ -9,8 +9,8 @@ struct bpf_testmod_struct_arg_1 {
 	int a;
 };
 struct bpf_testmod_struct_arg_2 {
-	long a;
-	long b;
+	long long a;
+	long long b;
 };
 
 struct bpf_testmod_struct_arg_3 {
@@ -30,16 +30,16 @@ union bpf_testmod_union_arg_2 {
 	struct bpf_testmod_struct_arg_2 arg;
 };
 
-long t1_a_a, t1_a_b, t1_b, t1_c, t1_ret, t1_nregs;
+long long t1_a_a, t1_a_b, t1_b, t1_c, t1_ret, t1_nregs;
 __u64 t1_reg0, t1_reg1, t1_reg2, t1_reg3;
-long t2_a, t2_b_a, t2_b_b, t2_c, t2_ret;
-long t3_a, t3_b, t3_c_a, t3_c_b, t3_ret;
-long t4_a_a, t4_b, t4_c, t4_d, t4_e_a, t4_e_b, t4_ret;
-long t5_ret;
+long long t2_a, t2_b_a, t2_b_b, t2_c, t2_ret;
+long long t3_a, t3_b, t3_c_a, t3_c_b, t3_ret;
+long long t4_a_a, t4_b, t4_c, t4_d, t4_e_a, t4_e_b, t4_ret;
+long long t5_ret;
 int t6;
 
-long ut1_a_a, ut1_b, ut1_c;
-long ut2_a, ut2_b_a, ut2_b_b;
+long long ut1_a_a, ut1_b, ut1_c;
+long long ut2_a, ut2_b_a, ut2_b_b;
 
 SEC("fentry/bpf_testmod_test_struct_arg_1")
 int BPF_PROG2(test_struct_arg_1, struct bpf_testmod_struct_arg_2, a, int, b, int, c)

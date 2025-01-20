@@ -27,7 +27,7 @@ int output_bss1;
 int output_data1;
 int output_rodata1;
 
-long output_sink1;
+int output_sink1;
 
 static __noinline int get_bss_res(void)
 {

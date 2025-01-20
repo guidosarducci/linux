@@ -20,21 +20,21 @@ struct {
 
 /* inputs */
 int pid = 0;
-long value = 0;
-long flags = 0;
+long long value = 0;
+long long flags = 0;
 
 /* outputs */
-long total = 0;
-long discarded = 0;
-long dropped = 0;
+long long total = 0;
+long long discarded = 0;
+long long dropped = 0;
 
-long avail_data = 0;
-long ring_size = 0;
-long cons_pos = 0;
-long prod_pos = 0;
+long long avail_data = 0;
+long long ring_size = 0;
+long long cons_pos = 0;
+long long prod_pos = 0;
 
 /* inner state */
-long seq = 0;
+long long seq = 0;
 
 SEC("fentry/" SYS_PREFIX "sys_getpgid")
 int test_ringbuf(void *ctx)

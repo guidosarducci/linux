@@ -9,8 +9,8 @@ char _license[] SEC("license") = "GPL";
 uint32_t tid = 0;
 int num_unknown_tid = 0;
 int num_known_tid = 0;
-void *user_ptr = 0;
-void *user_ptr_long = 0;
+u32  user_ptr = 0;
+u32  user_ptr_long = 0;
 uint32_t pid = 0;
 
 static char big_str1[5000];
@@ -113,7 +113,7 @@ int dump_task_sleepable(struct bpf_iter__task *ctx)
 	++num_expected_failure_copy_from_user_task_str;
 
 	/* Same length as the string */
-	ret = bpf_copy_from_user_task_str((char *)task_str2, 10, user_ptr, task, 0);
+	ret = bpf_copy_from_user_task_str((char *)task_str2, 10, (void *)(uintptr_t)user_ptr, task, 0);
 	/* only need to do the task pid check once */
 	if (bpf_strncmp(task_str2, 10, "test_data\0") != 0 || ret != 10 || task->tgid != pid) {
 		BPF_SEQ_PRINTF(seq, "%s\n", info);
@@ -121,14 +121,14 @@ int dump_task_sleepable(struct bpf_iter__task *ctx)
 	}
 
 	/* Shorter length than the string */
-	ret = bpf_copy_from_user_task_str((char *)task_str3, 2, user_ptr, task, 0);
+	ret = bpf_copy_from_user_task_str((char *)task_str3, 2, (void *)(uintptr_t)user_ptr, task, 0);
 	if (bpf_strncmp(task_str3, 2, "t\0") != 0 || ret != 2) {
 		BPF_SEQ_PRINTF(seq, "%s\n", info);
 		return 0;
 	}
 
 	/* Longer length than the string */
-	ret = bpf_copy_from_user_task_str((char *)task_str4, 20, user_ptr, task, 0);
+	ret = bpf_copy_from_user_task_str((char *)task_str4, 20, (void *)(uintptr_t)user_ptr, task, 0);
 	if (bpf_strncmp(task_str4, 10, "test_data\0") != 0 || ret != 10
 	    || task_str4[sizeof(task_str4) - 1] != 'a') {
 		BPF_SEQ_PRINTF(seq, "%s\n", info);
@@ -136,7 +136,7 @@ int dump_task_sleepable(struct bpf_iter__task *ctx)
 	}
 
 	/* Longer length than the string with pad zeros flag */
-	ret = bpf_copy_from_user_task_str((char *)task_str4, 20, user_ptr, task, BPF_F_PAD_ZEROS);
+	ret = bpf_copy_from_user_task_str((char *)task_str4, 20, (void *)(uintptr_t)user_ptr, task, BPF_F_PAD_ZEROS);
 	if (bpf_strncmp(task_str4, 10, "test_data\0") != 0 || ret != 10
 	    || task_str4[sizeof(task_str4) - 1] != '\0') {
 		BPF_SEQ_PRINTF(seq, "%s\n", info);
@@ -144,14 +144,14 @@ int dump_task_sleepable(struct bpf_iter__task *ctx)
 	}
 
 	/* Longer length than the string past a page boundary */
-	ret = bpf_copy_from_user_task_str(big_str1, 5000, user_ptr, task, 0);
+	ret = bpf_copy_from_user_task_str(big_str1, 5000, (void *)(uintptr_t)user_ptr, task, 0);
 	if (bpf_strncmp(big_str1, 10, "test_data\0") != 0 || ret != 10) {
 		BPF_SEQ_PRINTF(seq, "%s\n", info);
 		return 0;
 	}
 
 	/* String that crosses a page boundary */
-	ret = bpf_copy_from_user_task_str(big_str1, 5000, user_ptr_long, task, BPF_F_PAD_ZEROS);
+	ret = bpf_copy_from_user_task_str(big_str1, 5000, (void *)(uintptr_t)user_ptr_long, task, BPF_F_PAD_ZEROS);
 	if (bpf_strncmp(big_str1, 4, "baba") != 0 || ret != 5000
 	    || bpf_strncmp(big_str1 + 4996, 4, "bab\0") != 0) {
 		BPF_SEQ_PRINTF(seq, "%s\n", info);
@@ -173,7 +173,7 @@ int dump_task_sleepable(struct bpf_iter__task *ctx)
 	}
 
 	/* Longer length than the string that crosses a page boundary */
-	ret = bpf_copy_from_user_task_str(big_str2, 5005, user_ptr_long, task, BPF_F_PAD_ZEROS);
+	ret = bpf_copy_from_user_task_str(big_str2, 5005, (void *)(uintptr_t)user_ptr_long, task, BPF_F_PAD_ZEROS);
 	if (bpf_strncmp(big_str2, 4, "baba") != 0 || ret != 5000
 	    || bpf_strncmp(big_str2 + 4996, 5, "bab\0\0") != 0) {
 		BPF_SEQ_PRINTF(seq, "%s\n", info);
@@ -181,7 +181,7 @@ int dump_task_sleepable(struct bpf_iter__task *ctx)
 	}
 
 	/* Shorter length than the string that crosses a page boundary */
-	ret = bpf_copy_from_user_task_str(big_str3, 4996, user_ptr_long, task, 0);
+	ret = bpf_copy_from_user_task_str(big_str3, 4996, (void *)(uintptr_t)user_ptr_long, task, 0);
 	if (bpf_strncmp(big_str3, 4, "baba") != 0 || ret != 4996
 	    || bpf_strncmp(big_str3 + 4992, 4, "bab\0") != 0) {
 		BPF_SEQ_PRINTF(seq, "%s\n", info);

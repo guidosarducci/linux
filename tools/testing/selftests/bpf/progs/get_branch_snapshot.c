@@ -10,7 +10,7 @@ __u64 test1_hits = 0;
 __u64 address_low = 0;
 __u64 address_high = 0;
 int wasted_entries = 0;
-long total_entries = 0;
+__s64 total_entries = 0;
 
 #define ENTRY_CNT 32
 struct perf_branch_entry entries[ENTRY_CNT] = {};

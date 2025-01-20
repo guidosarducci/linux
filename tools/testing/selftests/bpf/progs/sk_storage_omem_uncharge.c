@@ -6,8 +6,8 @@
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
 
-void *local_storage_ptr = NULL;
-void *sk_ptr = NULL;
+static void *local_storage_ptr = NULL;
+static void *sk_ptr = NULL;
 int cookie_found = 0;
 __u64 cookie = 0;
 __u32 omem = 0;

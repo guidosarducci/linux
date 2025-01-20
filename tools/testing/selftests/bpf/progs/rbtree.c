@@ -22,9 +22,9 @@ struct root_nested {
 	struct root_nested_inner inner;
 };
 
-long less_callback_ran = -1;
-long removed_key = -1;
-long first_data[2] = {-1, -1};
+long long less_callback_ran = -1;
+long long removed_key = -1;
+long long first_data[2] = {-1, -1};
 
 #define private(name) SEC(".data." #name) __hidden __attribute__((aligned(8)))
 private(A) struct bpf_spin_lock glock;

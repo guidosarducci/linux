@@ -41,8 +41,8 @@ struct bpf_testmod_struct_arg_1 {
 	int a;
 };
 struct bpf_testmod_struct_arg_2 {
-	long a;
-	long b;
+	long long a;
+	long long b;
 };
 
 struct bpf_testmod_struct_arg_3 {
@@ -59,7 +59,7 @@ struct bpf_testmod_struct_arg_5 {
 	char a;
 	short b;
 	int c;
-	long d;
+	long long d;
 };
 
 union bpf_testmod_union_arg_1 {
@@ -133,7 +133,7 @@ bpf_testmod_test_struct_arg_8(u64 a, void *b, short c, int d, void *e,
 
 noinline int
 bpf_testmod_test_struct_arg_9(u64 a, void *b, short c, int d, void *e, char f,
-			      short g, struct bpf_testmod_struct_arg_5 h, long i)
+			      short g, struct bpf_testmod_struct_arg_5 h, long long i)
 {
 	bpf_testmod_test_struct_arg_result = a + (long)b + c + d + (long)e +
 		f + g + h.a + h.b + h.c + h.d + i;

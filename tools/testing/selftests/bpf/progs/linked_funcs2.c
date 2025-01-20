@@ -9,7 +9,7 @@
 
 /* weak and shared between both files */
 const volatile int my_tid __weak;
-long syscall_id __weak;
+int syscall_id __weak;
 
 int output_val2;
 int output_ctx2;

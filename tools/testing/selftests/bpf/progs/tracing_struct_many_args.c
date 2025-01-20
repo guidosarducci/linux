@@ -12,12 +12,12 @@ struct bpf_testmod_struct_arg_5 {
 	char a;
 	short b;
 	int c;
-	long d;
+	long long d;
 };
 
-long t7_a, t7_b, t7_c, t7_d, t7_e, t7_f_a, t7_f_b, t7_ret;
-long t8_a, t8_b, t8_c, t8_d, t8_e, t8_f_a, t8_f_b, t8_g, t8_ret;
-long t9_a, t9_b, t9_c, t9_d, t9_e, t9_f, t9_g, t9_h_a, t9_h_b, t9_h_c, t9_h_d, t9_i, t9_ret;
+long long t7_a, t7_b, t7_c, t7_d, t7_e, t7_f_a, t7_f_b, t7_ret;
+long long t8_a, t8_b, t8_c, t8_d, t8_e, t8_f_a, t8_f_b, t8_g, t8_ret;
+long long t9_a, t9_b, t9_c, t9_d, t9_e, t9_f, t9_g, t9_h_a, t9_h_b, t9_h_c, t9_h_d, t9_i, t9_ret;
 
 SEC("fentry/bpf_testmod_test_struct_arg_7")
 int BPF_PROG2(test_struct_many_args_1, __u64, a, void *, b, short, c, int, d,
@@ -67,7 +67,7 @@ int BPF_PROG2(test_struct_many_args_4, __u64, a, void *, b, short, c, int, d,
 
 SEC("fentry/bpf_testmod_test_struct_arg_9")
 int BPF_PROG2(test_struct_many_args_5, __u64, a, void *, b, short, c, int, d, void *, e,
-	      char, f, short, g, struct bpf_testmod_struct_arg_5, h, long, i)
+	      char, f, short, g, struct bpf_testmod_struct_arg_5, h, long long, i)
 {
 	t9_a = a;
 	t9_b = (long)b;
@@ -86,7 +86,7 @@ int BPF_PROG2(test_struct_many_args_5, __u64, a, void *, b, short, c, int, d, vo
 
 SEC("fexit/bpf_testmod_test_struct_arg_9")
 int BPF_PROG2(test_struct_many_args_6, __u64, a, void *, b, short, c, int, d, void *, e,
-	      char, f, short, g, struct bpf_testmod_struct_arg_5, h, long, i, int, ret)
+	      char, f, short, g, struct bpf_testmod_struct_arg_5, h, long long, i, int, ret)
 {
 	t9_ret = ret;
 	return 0;

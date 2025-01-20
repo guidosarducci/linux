@@ -46,12 +46,12 @@ struct {
 /* inputs */
 int pid = 0;
 int target_ring = 0;
-long value = 0;
+long long value = 0;
 
 /* outputs */
-long total = 0;
-long dropped = 0;
-long skipped = 0;
+long long total = 0;
+long long dropped = 0;
+long long skipped = 0;
 
 SEC("tp/syscalls/sys_enter_getpgid")
 int test_ringbuf(void *ctx)

@@ -30,7 +30,7 @@ struct node_data2 {
  * [34] FWD 'node_data' fwd_kind=struct
  * [35] TYPE_TAG 'kptr_ref' type_id=34
  */
-struct node_data *just_here_because_btf_bug;
+//struct node_data *just_here_because_btf_bug;
 
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);

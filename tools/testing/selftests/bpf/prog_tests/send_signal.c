@@ -14,7 +14,7 @@ static void sigusr1_handler(int signum)
 
 static void sigusr1_siginfo_handler(int s, siginfo_t *i, void *v)
 {
-	sigusr1_received = (int)(long long)i->si_value.sival_ptr;
+	sigusr1_received = (intptr_t)i->si_value.sival_ptr;
 }
 
 static void test_send_signal_common(struct perf_event_attr *attr,

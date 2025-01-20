@@ -14,8 +14,8 @@ struct {
 int pid = 0;
 
 /* outputs */
-long passed = 0;
-long discarded = 0;
+long long passed = 0;
+long long discarded = 0;
 
 SEC("fentry/" SYS_PREFIX "sys_getpgid")
 int test_ringbuf_write(void *ctx)

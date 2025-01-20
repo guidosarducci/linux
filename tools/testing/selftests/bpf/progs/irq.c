@@ -5,7 +5,7 @@
 #include "bpf_misc.h"
 #include "bpf_experimental.h"
 
-unsigned long global_flags;
+u64 global_flags;
 
 extern void bpf_local_irq_save(unsigned long *) __weak __ksym;
 extern void bpf_local_irq_restore(unsigned long *) __weak __ksym;
@@ -18,7 +18,7 @@ SEC("?tc")
 __failure __msg("arg#0 doesn't point to an irq flag on stack")
 int irq_save_bad_arg(struct __sk_buff *ctx)
 {
-	bpf_local_irq_save(&global_flags);
+	bpf_local_irq_save((void *)&global_flags);
 	return 0;
 }
 
@@ -26,7 +26,7 @@ SEC("?tc")
 __failure __msg("arg#0 doesn't point to an irq flag on stack")
 int irq_restore_bad_arg(struct __sk_buff *ctx)
 {
-	bpf_local_irq_restore(&global_flags);
+	bpf_local_irq_restore((void *)&global_flags);
 	return 0;
 }
 

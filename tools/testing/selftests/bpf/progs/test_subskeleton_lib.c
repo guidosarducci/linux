@@ -25,7 +25,7 @@ extern int var6;
 
 int var7 SEC(".data.custom");
 
-int (*fn_ptr)(void);
+//int (*fn_ptr)(void);
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);

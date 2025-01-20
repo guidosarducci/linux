@@ -79,7 +79,7 @@ static void verify_success(const char *prog_name, enum test_setup_type setup_typ
 	if (!ASSERT_OK(err, "dynptr_success__load"))
 		goto cleanup;
 
-	skel->bss->user_ptr = user_data;
+	skel->bss->user_addr = (uintptr_t)user_data;
 	skel->data->test_len[0] = sizeof(user_data);
 	memcpy(skel->bss->expected_str, user_data, sizeof(user_data));
 

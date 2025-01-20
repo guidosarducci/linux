@@ -10,7 +10,7 @@ struct task_ls_map {
 	__type(value, int);
 } task_ls_map SEC(".maps");
 
-long gp_seq;
+long long gp_seq;
 
 SEC("syscall")
 int do_call_rcu_tasks_trace(void *ctx)

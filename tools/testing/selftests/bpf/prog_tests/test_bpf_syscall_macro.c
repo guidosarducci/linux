@@ -75,9 +75,9 @@ void test_bpf_syscall_macro(void)
 	ASSERT_EQ(err, -EBADF, "splice_err");
 
 	ASSERT_EQ(skel->bss->splice_fd_in, -42, "splice_arg1");
-	ASSERT_EQ(skel->bss->splice_off_in, (__u64)&off_in, "splice_arg2");
+	ASSERT_EQ(skel->bss->splice_off_in, (uintptr_t)&off_in, "splice_arg2");
 	ASSERT_EQ(skel->bss->splice_fd_out, 42, "splice_arg3");
-	ASSERT_EQ(skel->bss->splice_off_out, (__u64)&off_out, "splice_arg4");
+	ASSERT_EQ(skel->bss->splice_off_out, (uintptr_t)&off_out, "splice_arg4");
 	ASSERT_EQ(skel->bss->splice_len, 0x12340000, "splice_arg5");
 	ASSERT_EQ(skel->bss->splice_flags, SPLICE_F_NONBLOCK, "splice_arg6");
 

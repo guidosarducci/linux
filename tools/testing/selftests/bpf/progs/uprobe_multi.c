@@ -31,13 +31,13 @@ bool bad_pid_seen = false;
 bool bad_pid_seen_usdt = false;
 
 bool test_cookie = false;
-void *user_ptr = 0;
+u32 user_addr = 0;
 
 static __always_inline bool verify_sleepable_user_copy(void)
 {
 	char data[9];
 
-	bpf_copy_from_user(data, sizeof(data), user_ptr);
+	bpf_copy_from_user(data, sizeof(data), (void *)(uintptr_t)user_addr);
 	return bpf_strncmp(data, sizeof(data), "test_data") == 0;
 }
 

@@ -114,13 +114,13 @@ static void test_synproxy(bool xdp)
 		if (!ASSERT_OK_PTR(prog_id, "find prog id"))
 			goto out;
 		prog_id += 4;
-		if (!ASSERT_LT(prog_id, buf + size, "find prog id begin"))
+		if (!ASSERT_LT((uintptr_t)prog_id, (uintptr_t)buf + size, "find prog id begin"))
 			goto out;
 		prog_id_end = prog_id;
 		while (prog_id_end < buf + size && *prog_id_end >= '0' &&
 		       *prog_id_end <= '9')
 			prog_id_end++;
-		if (!ASSERT_LT(prog_id_end, buf + size, "find prog id end"))
+		if (!ASSERT_LT((uintptr_t)prog_id_end, (uintptr_t)buf + size, "find prog id end"))
 			goto out;
 		*prog_id_end = '\0';
 	}

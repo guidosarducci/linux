@@ -49,7 +49,7 @@ void test_read_vsyscall(void)
 	/* userspace may don't have vsyscall page due to LEGACY_VSYSCALL_NONE,
 	 * but it doesn't affect the returned error codes.
 	 */
-	skel->bss->user_ptr = (void *)VSYSCALL_ADDR;
+	skel->bss->user_ptr = VSYSCALL_ADDR;
 	usleep(1);
 
 	for (i = 0; i < ARRAY_SIZE(all_read); i++)

@@ -9,7 +9,7 @@ const volatile struct {
 	/* return error from __init function */
 	int inject_error;
 	/* uffd monitored range start address */
-	void *fault_addr;
+	u32 fault_addr;
 } bpf_mod_race_config = { -1 };
 
 int bpf_blocking = 0;
@@ -76,7 +76,7 @@ int BPF_PROG(widen_race, int a, int ret)
 		return 0;
 	/* Indicate that we will attempt to block */
 	bpf_blocking = 1;
-	bpf_copy_from_user(&dst, 1, bpf_mod_race_config.fault_addr);
+	bpf_copy_from_user(&dst, 1, (void *)(uintptr_t)bpf_mod_race_config.fault_addr);
 	return bpf_mod_race_config.inject_error;
 }
 

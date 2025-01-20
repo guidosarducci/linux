@@ -6,7 +6,7 @@
 #include "../test_kmods/bpf_testmod_kfunc.h"
 
 static struct prog_test_ref_kfunc __kptr *v;
-long total_sum = -1;
+long long total_sum = -1;
 
 SEC("tc")
 int test_jit_probe_mem(struct __sk_buff *ctx)

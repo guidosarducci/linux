@@ -13,7 +13,7 @@
 #define NF_CT_ZONE_DIR_ORIG (1 << IP_CT_DIR_ORIGINAL)
 #define NF_CT_ZONE_DIR_REPL (1 << IP_CT_DIR_REPLY)
 
-extern unsigned long CONFIG_HZ __kconfig;
+extern uint64_t CONFIG_HZ __kconfig;
 
 int test_einval_bpf_tuple = 0;
 int test_einval_reserved = 0;

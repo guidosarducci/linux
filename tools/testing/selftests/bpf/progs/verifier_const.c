@@ -6,9 +6,9 @@
 #include <bpf/bpf_tracing.h>
 #include "bpf_misc.h"
 
-const volatile long foo = 42;
-long bar;
-long bart = 96;
+const volatile long long foo = 42;
+long long bar;
+long long bart = 96;
 
 SEC("tc/ingress")
 __description("rodata/strtol: write rejected")
@@ -16,7 +16,7 @@ __failure __msg("write into map forbidden")
 int tcx1(struct __sk_buff *skb)
 {
 	char buff[] = { '8', '4', '\0' };
-	bpf_strtol(buff, sizeof(buff), 0, (long *)&foo);
+	bpf_strtol(buff, sizeof(buff), 0, (void *)&foo);
 	return TCX_PASS;
 }
 
@@ -26,7 +26,7 @@ __success
 int tcx2(struct __sk_buff *skb)
 {
 	char buff[] = { '8', '4', '\0' };
-	bpf_strtol(buff, sizeof(buff), 0, &bar);
+	bpf_strtol(buff, sizeof(buff), 0, (void *)&bar);
 	return TCX_PASS;
 }
 
@@ -36,7 +36,7 @@ __success
 int tcx3(struct __sk_buff *skb)
 {
 	char buff[] = { '8', '4', '\0' };
-	bpf_strtol(buff, sizeof(buff), 0, &bart);
+	bpf_strtol(buff, sizeof(buff), 0, (void *)&bart);
 	return TCX_PASS;
 }
 

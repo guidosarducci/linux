@@ -248,9 +248,9 @@ void uprobe_multi_func_3(void);
 
 static void uprobe_multi_test_run(struct uprobe_multi *skel)
 {
-	skel->bss->uprobe_multi_func_1_addr = (__u64) uprobe_multi_func_1;
-	skel->bss->uprobe_multi_func_2_addr = (__u64) uprobe_multi_func_2;
-	skel->bss->uprobe_multi_func_3_addr = (__u64) uprobe_multi_func_3;
+	skel->bss->uprobe_multi_func_1_addr = (__u64)(uintptr_t)uprobe_multi_func_1;
+	skel->bss->uprobe_multi_func_2_addr = (__u64)(uintptr_t)uprobe_multi_func_2;
+	skel->bss->uprobe_multi_func_3_addr = (__u64)(uintptr_t)uprobe_multi_func_3;
 
 	skel->bss->pid = getpid();
 	skel->bss->test_cookie = true;

@@ -107,7 +107,7 @@ static void bictcp_reset(struct bpf_bictcp *ca)
 	ca->found = 0;
 }
 
-extern unsigned long CONFIG_HZ __kconfig;
+extern uint64_t CONFIG_HZ __kconfig;
 #define HZ CONFIG_HZ
 #define USEC_PER_MSEC	1000UL
 #define USEC_PER_SEC	1000000UL

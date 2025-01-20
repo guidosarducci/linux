@@ -22,10 +22,10 @@ struct {
 	__type(value, stack_trace_t);
 } stackdata_map SEC(".maps");
 
-long stackid_kernel = 1;
-long stackid_user = 1;
-long stack_kernel = 1;
-long stack_user = 1;
+long long stackid_kernel = 1;
+long long stackid_user = 1;
+long long stack_kernel = 1;
+long long stack_user = 1;
 
 SEC("perf_event")
 int oncpu(void *ctx)

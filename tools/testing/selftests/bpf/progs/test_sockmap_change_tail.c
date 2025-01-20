@@ -15,7 +15,7 @@ struct {
 	__type(value, int);
 } sock_map_rx SEC(".maps");
 
-long change_tail_ret = 1;
+long long change_tail_ret = 1;
 
 SEC("sk_skb")
 int prog_skb_verdict(struct __sk_buff *skb)
