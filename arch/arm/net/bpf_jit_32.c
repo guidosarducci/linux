@@ -31,13 +31,13 @@
  *                         high
  * original ARM_SP =>     +-----+
  *                        |     | callee saved registers
- *                        +-----+ <= (BPF_FP + SCRATCH_SIZE)
+ *                        +-----+ <= (BPF_FP + REG_STACK_SIZE)
  *                        | ... | JIT stacked BPF regs
  * BPF fp register =>     +-----+
  *   (BPF_FP)             | ... | BPF prog stack
  *                        +-----+
  *                        |RSVD | JIT scratchpad
- * current ARM_SP =>      +-----+ <= (BPF_FP - STACK_SIZE + SCRATCH_SIZE)
+ * current ARM_SP =>      +-----+ <= (BPF_FP - STACK_SIZE + REG_STACK_SIZE)
  *                        | ... | caller-saved registers
  *                        +-----+
  *                        | ... | arguments passed on stack
@@ -110,21 +110,9 @@ enum {
 	 * BPF_REG_5, BPF_REG_7, BPF_REG_8, BPF_REG_9,
 	 * BPF_REG_FP and Tail call counts.
 	 */
-	BPF_JIT_SCRATCH_REGS,
+	BPF_JIT_STACK_REGS,
 };
-
-/*
- * Negative "register" values indicate the register is stored on the stack
- * and are the offset from the top of the eBPF JIT scratch space.
- */
-#define STACK_OFFSET(k)	(-4 - (k) * 4)
-#define SCRATCH_SIZE	(BPF_JIT_SCRATCH_REGS * 4)
-
-#ifdef CONFIG_FRAME_POINTER
-#define EBPF_SCRATCH_TO_ARM_FP(x) ((x) - 4 * hweight16(CALLEE_PUSH_MASK) - 4)
-#else
-#define EBPF_SCRATCH_TO_ARM_FP(x) (x)
-#endif
+#define REG_STACK_SIZE	(BPF_JIT_STACK_REGS * 4)
 
 #define TMP_REG_1	(MAX_BPF_JIT_REG + 0)	/* TEMP Register 1 */
 #define TMP_REG_2	(MAX_BPF_JIT_REG + 1)	/* TEMP Register 2 */
@@ -146,7 +134,11 @@ enum {
  * registers, we have to map each BPF register with two arm 32-bit regs or
  * stack memory space and we have to build BPF 64-bit register from those.
  *
+ * Negative "register" values indicate the register is stored on the stack
+ * and are the offset from the top of the BPF JIT register stack space.
  */
+#define STACK_OFFSET(k)	(-4 - (k) * 4)
+
 static const s8 bpf2a32[][2] = {
 	/* Return value from in-kernel function, and exit value from BPF */
 	[BPF_REG_0] = {ARM_R1, ARM_R0},
@@ -175,6 +167,7 @@ static const s8 bpf2a32[][2] = {
 	 */
 	[BPF_REG_AX] = {STACK_OFFSET(BPF_AX_HI), STACK_OFFSET(BPF_AX_LO)},
 };
+#undef STACK_OFFSET
 
 #define	dst_lo	dst[1]
 #define dst_hi	dst[0]
@@ -207,6 +200,9 @@ struct jit_ctx {
 	u32 *offsets;
 	u32 *target;
 	u32 stack_size;
+	s32 bpf_rsbp_fp_off;	/* fp offset to BPF register stack base */
+	s32 prologue_tcc_skip;	/* offset: skip BPF FP, TCC, R1 setup */
+	s32 epilogue_main_skip;	/* offset: skip restoring BPF callee-saved */
 #if __LINUX_ARM_ARCH__ < 7
 	u16 epilogue_bytes;
 	u16 imm_count;
@@ -392,15 +388,11 @@ static void jit_fill_hole(void *area, unsigned int size)
 
 #if defined(CONFIG_AEABI) && (__LINUX_ARM_ARCH__ >= 5)
 /* EABI requires the stack to be aligned to 64-bit boundaries */
-#define STACK_ALIGNMENT	8
+#define JIT_ALIGN(x)	ALIGN(x, 8)
 #else
 /* Stack must be aligned to 32-bit boundaries */
-#define STACK_ALIGNMENT	4
+#define JIT_ALIGN(x)	ALIGN(x, 4)
 #endif
-
-/* total stack size used in JITed code */
-#define _STACK_SIZE	(ctx->prog->aux->stack_depth + SCRATCH_SIZE)
-#define STACK_SIZE	ALIGN(_STACK_SIZE, STACK_ALIGNMENT)
 
 #if __LINUX_ARM_ARCH__ < 7
 
@@ -653,8 +645,14 @@ cont:
 	}
 }
 
+/* Load a pointer to the base of stacked BPF registers*/
+static inline void emit_ld_reg_stack_base(u8 reg, struct jit_ctx *ctx)
+{
+	emit(ARM_LDR_I(reg, ARM_FP, ctx->bpf_rsbp_fp_off), ctx);
+}
+
 /* Is the translated BPF register on stack? */
-static bool is_stacked(s8 reg)
+static inline bool is_stacked(s8 reg)
 {
 	return reg < 0;
 }
@@ -690,7 +688,8 @@ static inline void emit_strd_i(u8 src, u8 base, s8 off, struct jit_ctx *ctx)
 static s8 arm_bpf_get_reg32(s8 reg, s8 tmp, struct jit_ctx *ctx)
 {
 	if (is_stacked(reg)) {
-		emit(ARM_LDR_I(tmp, ARM_FP, EBPF_SCRATCH_TO_ARM_FP(reg)), ctx);
+		emit_ld_reg_stack_base(tmp, ctx);
+		emit(ARM_LDR_I(tmp, tmp, reg), ctx);
 		reg = tmp;
 	}
 	return reg;
@@ -700,29 +699,32 @@ static const s8 *arm_bpf_get_reg64(const s8 *reg, const s8 *tmp,
 				   struct jit_ctx *ctx)
 {
 	if (is_stacked(reg[1])) {
-		emit_ldrd_i(tmp[1], ARM_FP, EBPF_SCRATCH_TO_ARM_FP(reg[1]), ctx);
+		emit_ld_reg_stack_base(tmp[0], ctx);
+		emit_ldrd_i(tmp[1], tmp[0], reg[1], ctx);
 		reg = tmp;
 	}
 	return reg;
 }
 
 /* If a BPF register is on the stack (stk is true), save the register
- * back to the stack.  If the source register is not the same, then
- * move it into the correct register.
+ * back to the stack with help of a 32-bit temporary.  If the source
+ * register is not the same, then move it into the correct register.
  */
-static void arm_bpf_put_reg32(s8 reg, s8 src, struct jit_ctx *ctx)
+static void arm_bpf_put_reg32(s8 reg, s8 src, s8 tmp, struct jit_ctx *ctx)
 {
-	if (is_stacked(reg))
-		emit(ARM_STR_I(src, ARM_FP, EBPF_SCRATCH_TO_ARM_FP(reg)), ctx);
-	else if (reg != src)
+	if (is_stacked(reg)) {
+		emit_ld_reg_stack_base(tmp, ctx);
+		emit(ARM_STR_I(src, tmp, reg), ctx);
+	} else if (reg != src)
 		emit(ARM_MOV_R(reg, src), ctx);
 }
 
-static void arm_bpf_put_reg64(const s8 *reg, const s8 *src,
+static void arm_bpf_put_reg64(const s8 *reg, const s8 *src, s8 tmp,
 			      struct jit_ctx *ctx)
 {
 	if (is_stacked(reg[1])) {
-		emit_strd_i(src[1], ARM_FP, EBPF_SCRATCH_TO_ARM_FP(reg[1]), ctx);
+		emit_ld_reg_stack_base(tmp, ctx);
+		emit_strd_i(src[1], tmp, reg[1], ctx);
 	} else {
 		if (reg[1] != src[1])
 			emit(ARM_MOV_R(reg[1], src[1]), ctx);
@@ -739,7 +741,7 @@ static inline void emit_a32_mov_i(const s8 dst, const u32 val, bool fixed,
 
 	if (is_stacked(dst)) {
 		emit_mov_i(tmp[1], val, fixed, ctx);
-		arm_bpf_put_reg32(dst, tmp[1], ctx);
+		arm_bpf_put_reg32(dst, tmp[1], tmp[0], ctx);
 	} else {
 		emit_mov_i(dst, val, fixed, ctx);
 	}
@@ -748,12 +750,13 @@ static inline void emit_a32_mov_i(const s8 dst, const u32 val, bool fixed,
 static void emit_a32_mov_i64(const s8 dst[], u64 val, bool fixed, struct jit_ctx *ctx)
 {
 	const s8 *tmp = bpf2a32[TMP_REG_1];
+	const s8 *tmp2 = bpf2a32[TMP_REG_2];
 	const s8 *rd = is_stacked(dst_lo) ? tmp : dst;
 
 	emit_mov_i(rd[1], (u32)val, fixed, ctx);
 	emit_mov_i(rd[0], val >> 32, fixed, ctx);
 
-	arm_bpf_put_reg64(dst, rd, ctx);
+	arm_bpf_put_reg64(dst, rd, tmp2[0], ctx);
 }
 
 /* Zero-extend register unless verifier does */
@@ -876,7 +879,7 @@ static inline void emit_a32_alu_r64(const bool is64, const s8 dst[],
 		emit_cond_zext(rd, ctx);
 	}
 
-	arm_bpf_put_reg64(dst, rd, ctx);
+	arm_bpf_put_reg64(dst, rd, tmp2[0], ctx); // FIXME ALU32 RSH sees 2 zext
 }
 
 /* dst = src (4 bytes)*/
@@ -885,7 +888,7 @@ static inline void emit_a32_mov_r(const s8 dst, const s8 src, struct jit_ctx *ct
 	s8 rt;
 
 	rt = arm_bpf_get_reg32(src, tmp[0], ctx);
-	arm_bpf_put_reg32(dst, rt, ctx);
+	arm_bpf_put_reg32(dst, rt, tmp[1], ctx);
 }
 
 /* dst = src */
@@ -904,12 +907,15 @@ static inline void emit_a32_mov_r64(const bool is64, const s8 dst[],
 	} else if (is_stacked(src_lo) && is_stacked(dst_lo)) {
 		const u8 *tmp = bpf2a32[TMP_REG_1];
 
-		emit_ldrd_i(tmp[1], ARM_FP, EBPF_SCRATCH_TO_ARM_FP(src_lo), ctx);
-		emit_strd_i(tmp[1], ARM_FP, EBPF_SCRATCH_TO_ARM_FP(dst_lo), ctx);
+		emit_ld_reg_stack_base(ARM_LR, ctx);
+		emit_ldrd_i(tmp[1], ARM_LR, src_lo, ctx);
+		emit_strd_i(tmp[1], ARM_LR, dst_lo, ctx);
 	} else if (is_stacked(src_lo)) {
-		emit_ldrd_i(dst[1], ARM_FP, EBPF_SCRATCH_TO_ARM_FP(src_lo), ctx);
+		emit_ld_reg_stack_base(ARM_LR, ctx);
+		emit_ldrd_i(dst[1], ARM_LR, src_lo, ctx);
 	} else if (is_stacked(dst_lo)) {
-		emit_strd_i(src[1], ARM_FP, EBPF_SCRATCH_TO_ARM_FP(dst_lo), ctx);
+		emit_ld_reg_stack_base(ARM_LR, ctx);
+		emit_strd_i(src[1], ARM_LR, dst_lo, ctx);
 	} else {
 		emit(ARM_MOV_R(dst[0], src[0]), ctx);
 		emit(ARM_MOV_R(dst[1], src[1]), ctx);
@@ -920,6 +926,7 @@ static inline void emit_a32_mov_r64(const bool is64, const s8 dst[],
 static inline void emit_a32_movsx_r64(const bool is64, const u8 off, const s8 dst[], const s8 src[],
 				      struct jit_ctx *ctx) {
 	const s8 *tmp = bpf2a32[TMP_REG_1];
+	const s8 *tmp2 = bpf2a32[TMP_REG_2];
 	s8 rs;
 	s8 rd;
 
@@ -953,7 +960,7 @@ static inline void emit_a32_movsx_r64(const bool is64, const u8 off, const s8 ds
 	 * This saves us one str instruction.
 	 */
 	if (dst_lo != src_lo || off != 32)
-		arm_bpf_put_reg32(dst_lo, rd, ctx);
+		arm_bpf_put_reg32(dst_lo, rd, tmp2[0], ctx);
 
 	if (!is64) {
 		/* Zero out high 4 bytes */
@@ -961,7 +968,7 @@ static inline void emit_a32_movsx_r64(const bool is64, const u8 off, const s8 ds
 	} else {
 		if (is_stacked(dst_hi)) {
 			emit(ARM_ASR_I(tmp[0], rd, 31), ctx);
-			arm_bpf_put_reg32(dst_hi, tmp[0], ctx);
+			arm_bpf_put_reg32(dst_hi, tmp[0], tmp2[0], ctx);
 		} else {
 			emit(ARM_ASR_I(dst_hi, rd, 31), ctx);
 		}
@@ -992,13 +999,14 @@ static inline void emit_a32_alu_i(const s8 dst, const u32 val,
 		break;
 	}
 
-	arm_bpf_put_reg32(dst, rd, ctx);
+	arm_bpf_put_reg32(dst, rd, tmp[1], ctx);
 }
 
 /* dst = ~dst (64 bit) */
 static inline void emit_a32_neg64(const s8 dst[],
 				struct jit_ctx *ctx){
 	const s8 *tmp = bpf2a32[TMP_REG_1];
+	const s8 *tmp2= bpf2a32[TMP_REG_2];
 	const s8 *rd;
 
 	/* Setup Operand */
@@ -1008,7 +1016,7 @@ static inline void emit_a32_neg64(const s8 dst[],
 	emit(ARM_RSBS_I(rd[1], rd[1], 0), ctx);
 	emit(ARM_RSC_I(rd[0], rd[0], 0), ctx);
 
-	arm_bpf_put_reg64(dst, rd, ctx);
+	arm_bpf_put_reg64(dst, rd, tmp2[0], ctx);
 }
 
 /* dst = dst << src */
@@ -1031,8 +1039,8 @@ static inline void emit_a32_lsh_r64(const s8 dst[], const s8 src[],
 	emit(ARM_ORR_SR(ARM_IP, ARM_LR, rd[1], SRTYPE_LSR, tmp2[0]), ctx);
 	emit(ARM_MOV_SR(ARM_LR, rd[1], SRTYPE_ASL, rt), ctx);
 
-	arm_bpf_put_reg32(dst_lo, ARM_LR, ctx);
-	arm_bpf_put_reg32(dst_hi, ARM_IP, ctx);
+	arm_bpf_put_reg32(dst_lo, ARM_LR, tmp2[0], ctx);
+	arm_bpf_put_reg32(dst_hi, ARM_IP, tmp2[0], ctx);
 }
 
 /* dst = dst >> src (signed)*/
@@ -1056,8 +1064,8 @@ static inline void emit_a32_arsh_r64(const s8 dst[], const s8 src[],
 	      ARM_ORR_SR(ARM_LR, ARM_LR, rd[0], SRTYPE_ASR, tmp2[0]), ctx);
 	emit(ARM_MOV_SR(ARM_IP, rd[0], SRTYPE_ASR, rt), ctx);
 
-	arm_bpf_put_reg32(dst_lo, ARM_LR, ctx);
-	arm_bpf_put_reg32(dst_hi, ARM_IP, ctx);
+	arm_bpf_put_reg32(dst_lo, ARM_LR, tmp2[0], ctx);
+	arm_bpf_put_reg32(dst_hi, ARM_IP, tmp2[0], ctx);
 }
 
 /* dst = dst >> src */
@@ -1080,8 +1088,8 @@ static inline void emit_a32_rsh_r64(const s8 dst[], const s8 src[],
 	emit(ARM_ORR_SR(ARM_LR, ARM_LR, rd[0], SRTYPE_LSR, tmp2[0]), ctx);
 	emit(ARM_MOV_SR(ARM_IP, rd[0], SRTYPE_LSR, rt), ctx);
 
-	arm_bpf_put_reg32(dst_lo, ARM_LR, ctx);
-	arm_bpf_put_reg32(dst_hi, ARM_IP, ctx);
+	arm_bpf_put_reg32(dst_lo, ARM_LR, tmp2[0], ctx);
+	arm_bpf_put_reg32(dst_hi, ARM_IP, tmp2[0], ctx);
 }
 
 /* dst = dst << val */
@@ -1107,7 +1115,7 @@ static inline void emit_a32_lsh_i64(const s8 dst[],
 		emit(ARM_EOR_R(rd[1], rd[1], rd[1]), ctx);
 	}
 
-	arm_bpf_put_reg64(dst, rd, ctx);
+	arm_bpf_put_reg64(dst, rd, tmp2[0], ctx);
 }
 
 /* dst = dst >> val */
@@ -1137,7 +1145,7 @@ static inline void emit_a32_rsh_i64(const s8 dst[],
 		emit(ARM_MOV_I(rd[0], 0), ctx);
 	}
 
-	arm_bpf_put_reg64(dst, rd, ctx);
+	arm_bpf_put_reg64(dst, rd, tmp2[0], ctx);
 }
 
 /* dst = dst >> val (signed) */
@@ -1167,7 +1175,7 @@ static inline void emit_a32_arsh_i64(const s8 dst[],
 		emit(ARM_MOV_SI(rd[0], rd[0], SRTYPE_ASR, 31), ctx);
 	}
 
-	arm_bpf_put_reg64(dst, rd, ctx);
+	arm_bpf_put_reg64(dst, rd, tmp2[0], ctx);
 }
 
 static inline void emit_a32_mul_r64(const s8 dst[], const s8 src[],
@@ -1188,8 +1196,8 @@ static inline void emit_a32_mul_r64(const s8 dst[], const s8 src[],
 	emit(ARM_UMULL(ARM_IP, rd[0], rd[1], rt[1]), ctx);
 	emit(ARM_ADD_R(rd[0], ARM_LR, rd[0]), ctx);
 
-	arm_bpf_put_reg32(dst_lo, ARM_IP, ctx);
-	arm_bpf_put_reg32(dst_hi, rd[0], ctx);
+	arm_bpf_put_reg32(dst_lo, ARM_IP, tmp2[0], ctx);
+	arm_bpf_put_reg32(dst_hi, rd[0], tmp2[0], ctx);
 }
 
 static bool is_ldst_imm(s16 off, const u8 size)
@@ -1269,6 +1277,7 @@ static inline void emit_str_r(const s8 dst, const s8 src[],
 static inline void emit_ldx_r(const s8 dst[], const s8 src,
 			      s16 off, struct jit_ctx *ctx, const u8 sz){
 	const s8 *tmp = bpf2a32[TMP_REG_1];
+	const s8 *tmp2 = bpf2a32[TMP_REG_2];
 	const s8 *rd = is_stacked(dst_lo) ? tmp : dst;
 	s8 rm = src;
 
@@ -1303,13 +1312,14 @@ static inline void emit_ldx_r(const s8 dst[], const s8 src,
 		emit(ARM_LDR_I(rd[0], rm, off + 4), ctx);
 		break;
 	}
-	arm_bpf_put_reg64(dst, rd, ctx);
+	arm_bpf_put_reg64(dst, rd, tmp2[0], ctx);
 }
 
 /* dst = *(signed size*)(src + off) */
 static inline void emit_ldsx_r(const s8 dst[], const s8 src,
 			       s16 off, struct jit_ctx *ctx, const u8 sz){
 	const s8 *tmp = bpf2a32[TMP_REG_1];
+	const s8 *tmp2 = bpf2a32[TMP_REG_2];
 	const s8 *rd = is_stacked(dst_lo) ? tmp : dst;
 	s8 rm = src;
 	int add_off;
@@ -1347,7 +1357,7 @@ static inline void emit_ldsx_r(const s8 dst[], const s8 src,
 	}
 	/* Carry the sign extension to upper 32 bits */
 	emit(ARM_ASR_I(rd[0], rd[1], 31), ctx);
-	arm_bpf_put_reg64(dst, rd, ctx);
+	arm_bpf_put_reg64(dst, rd, tmp2[0], ctx);
 }
 
 /* Arithmetic Operation */
@@ -1394,6 +1404,7 @@ static inline void emit_ar_r(const u8 rd, const u8 rt, const u8 rm,
 }
 
 static int out_offset = -1; /* initialized on the first pass of build_body() */
+
 static int emit_bpf_tail_call(struct jit_ctx *ctx)
 {
 
@@ -1441,7 +1452,7 @@ static int emit_bpf_tail_call(struct jit_ctx *ctx)
 	_emit(ARM_COND_CS, ARM_B(jmp_offset), ctx);
 	emit(ARM_ADDS_I(tc[1], tc[1], 1), ctx);
 	emit(ARM_ADC_I(tc[0], tc[0], 0), ctx);
-	arm_bpf_put_reg64(tcc, tmp, ctx);
+	arm_bpf_put_reg64(tcc, tmp, ARM_LR, ctx);
 
 	/* prog = array->ptrs[index]
 	 * if (prog == NULL)
@@ -1454,12 +1465,15 @@ static int emit_bpf_tail_call(struct jit_ctx *ctx)
 	emit(ARM_CMP_I(tmp[1], 0), ctx);
 	_emit(ARM_COND_EQ, ARM_B(jmp_offset), ctx);
 
+	/* Deallocate BPF prog stack */
+	emit(ARM_ADD_I(ARM_SP, ARM_SP, imm8m(ctx->stack_size)), ctx);
+
 	/* goto *(prog->bpf_func + prologue_size); */
 	BUILD_BUG_ON(offsetof(struct bpf_prog, bpf_func) >
 		     ARM_INST_LDST__IMM12);
 	off = offsetof(struct bpf_prog, bpf_func);
 	emit(ARM_LDR_I(tmp[1], tmp[1], off), ctx);
-	emit(ARM_ADD_I(tmp[1], tmp[1], ctx->prologue_bytes), ctx);
+	emit(ARM_ADD_I(tmp[1], tmp[1], 4), ctx); /* TC skips 1 prologue insn*/
 	emit_bx_r(tmp[1], ctx);
 
 	/* out: */
@@ -1528,58 +1542,165 @@ static inline void emit_push_r64(const s8 src[], struct jit_ctx *ctx)
 
 static void build_prologue(struct jit_ctx *ctx)
 {
-	const s8 arm_r0 = bpf2a32[BPF_REG_0][1];
+	const bool is_main_prog = !bpf_is_subprog(ctx->prog);
+	const bool is_cbpf = bpf_prog_was_classic(ctx->prog);
 	const s8 *bpf_r1 = bpf2a32[BPF_REG_1];
 	const s8 *bpf_fp = bpf2a32[BPF_REG_FP];
 	const s8 *tcc = bpf2a32[TCALL_CNT];
+	const s8 *tmp = bpf2a32[TMP_REG_1];
+	u16 reg_set = CALLEE_PUSH_MASK;
+	int idx_base, fp_sp_off = 0;
+	u8 reg;
 
-	/* Save callee saved registers. */
-#ifdef CONFIG_FRAME_POINTER
-	u16 reg_set = CALLEE_PUSH_MASK | 1 << ARM_IP | 1 << ARM_PC;
-	emit(ARM_MOV_R(ARM_IP, ARM_SP), ctx);
-	emit(ARM_PUSH(reg_set), ctx);
-	emit(ARM_SUB_I(ARM_FP, ARM_IP, 4), ctx);
-#else
-	emit(ARM_PUSH(CALLEE_PUSH_MASK), ctx);
-	emit(ARM_MOV_R(ARM_FP, ARM_SP), ctx);
-#endif
-	/* mov r3, #0 */
-	/* sub r2, sp, #SCRATCH_SIZE */
-	emit(ARM_MOV_I(bpf_r1[0], 0), ctx);
-	emit(ARM_SUB_I(bpf_r1[1], ARM_SP, SCRATCH_SIZE), ctx);
+	/* Default main program does full register/stack initialization,
+	 * while tailcall entry (+ 4 bytes) only sets up BPF program stack.
+	 */
+	if (is_main_prog && !is_cbpf) {
+		emit(ARM_B(0), ctx);
+		emit(ARM_B(ctx->prologue_tcc_skip), ctx); /* tailcall entry */
+	}
+	idx_base = ctx->idx;
 
-	ctx->stack_size = imm8m(STACK_SIZE);
+	/* Push ARM callee saved registers, cache previous ARM_FP in ARM_LR. */
+	if (IS_ENABLED(CONFIG_FRAME_POINTER)) {
+		reg_set |= BIT(ARM_IP) | BIT(ARM_PC);
+		emit(ARM_MOV_R(ARM_IP, ARM_SP), ctx);
+		emit(ARM_PUSH(reg_set), ctx);
+		emit(ARM_MOV_R(ARM_LR, ARM_FP), ctx);
+		/* ARM_PC above not restored in epilogue */
+		emit(ARM_SUB_I(ARM_FP, ARM_IP, 4), ctx);
+		/* ARM_FP offset to top of saved regs */
+		fp_sp_off = -4 * (hweight16(reg_set) - 1);
+	} else {
+		emit(ARM_PUSH(reg_set), ctx);
+		emit(ARM_MOV_R(ARM_LR, ARM_FP), ctx);
+		/* ARM_FP offset defaults to zero */
+		emit(ARM_MOV_R(ARM_FP, ARM_SP), ctx);
+	}
 
-	/* Set up function call stack */
-	emit(ARM_SUB_I(ARM_SP, ARM_SP, ctx->stack_size), ctx);
+	/* Ensure register stack is double-word aligned. */
+	if (hweight16(reg_set) % 2 == 0) {
+		emit(ARM_SUB_I(ARM_SP, ARM_SP, 8), ctx);
+		ctx->bpf_rsbp_fp_off = fp_sp_off - 8;
+	} else {
+		emit(ARM_SUB_I(ARM_SP, ARM_SP, 4), ctx);
+		ctx->bpf_rsbp_fp_off = fp_sp_off - 4;
+	}
 
-	/* Set up BPF prog stack base register */
-	emit_a32_mov_r64(true, bpf_fp, bpf_r1, ctx);
+	/* Initialize pointer to register stack base (RSBP). In main prog
+	 * this is a self-pointer located above register stack. Subprogs
+	 * omit the register stack and instead copy pointer from the
+	 * previous stack frame.
+	 */
+	if (is_main_prog)
+		emit(ARM_MOV_R(ARM_LR, ARM_SP), ctx);
+	else
+		emit(ARM_LDR_I(ARM_LR, ARM_LR, ctx->bpf_rsbp_fp_off), ctx);
 
-	/* Initialize Tail Count */
-	emit(ARM_MOV_I(bpf_r1[1], 0), ctx);
-	emit_a32_mov_r64(true, tcc, bpf_r1, ctx);
+	emit(ARM_STR_I(ARM_LR, ARM_SP, 0), ctx);
 
-	/* Move BPF_CTX to BPF_R1 */
-	emit(ARM_MOV_R(bpf_r1[1], arm_r0), ctx);
+	/* Allocate space for register stack only in main program. */
+	if (is_main_prog)
+		emit(ARM_SUB_I(ARM_SP, ARM_SP, REG_STACK_SIZE), ctx);
+
+	/* Push BPF callee-saved registers if stacked and this program
+	 * is a subprog call. Save all of them (for now) to simplify
+	 * handling stack deallocation and register restoring e.g. in
+	 * the case of tailcalls.
+	 */
+	if (!is_main_prog) {
+		for (reg = BPF_REG_FP; reg >= BPF_REG_6; reg--) {
+			const s8 *arm = bpf2a32[reg];
+
+			if (!is_stacked(arm[1]))
+				continue;
+			emit_ldrd_i(tmp[1], ARM_LR, arm[1], ctx);
+			emit(ARM_PUSH(BIT(tmp[1]) | BIT(tmp[0])), ctx);
+		}
+	}
+
+	/* Initialize BPF_FP base register */
+	emit(ARM_MOV_R(tmp[1], ARM_SP), ctx);
+	emit(ARM_MOV_I(tmp[0], 0), ctx);
+	emit_strd_i(tmp[1], ARM_LR, bpf_fp[1], ctx);
+
+	if (is_main_prog) {
+		/* Initialize Tail Count */
+		emit(ARM_MOV_I(tmp[1], 0), ctx);
+		emit_strd_i(tmp[1], ARM_LR, tcc[1], ctx);
+
+		/* Move BPF_CTX to BPF_R1 */
+		emit(ARM_MOV_I(bpf_r1[0], 0), ctx);
+		emit(ARM_MOV_R(bpf_r1[1], ARM_R0), ctx);
+	}
+
+	/* Tailcall entry point, calculate offset in first pass and save */
+	if (!ctx->prologue_tcc_skip)
+		ctx->prologue_tcc_skip = ctx->idx - idx_base - 1;
+
+	/* Allocate BPF prog stack */
+	if (ctx->stack_size)
+		emit(ARM_SUB_I(ARM_SP, ARM_SP, imm8m(ctx->stack_size)), ctx);
 
 	/* end of prologue */
 }
 
-/* restore callee saved registers. */
+/* Restore callee-saved registers as needed and return. ARM registers are
+ * always restored but BPF saved registers are not restored in the main
+ * program's stack frame since it returns to the kernel. Determining this
+ * at compile time using bpf_is_subprog() doesn't work because this could
+ * be the epilogue of a main program tail-called from a subprogram frame,
+ * and hence needs the runtime check below.
+ */
 static void build_epilogue(struct jit_ctx *ctx)
 {
-#ifdef CONFIG_FRAME_POINTER
-	/* When using frame pointers, some additional registers need to
-	 * be loaded. */
-	u16 reg_set = CALLEE_POP_MASK | 1 << ARM_SP;
-	emit(ARM_SUB_I(ARM_SP, ARM_FP, hweight16(reg_set) * 4), ctx);
-	emit(ARM_LDM(ARM_SP, reg_set), ctx);
-#else
-	/* Restore callee saved registers. */
-	emit(ARM_MOV_R(ARM_SP, ARM_FP), ctx);
-	emit(ARM_POP(CALLEE_POP_MASK), ctx);
-#endif
+	const s8 *tmp = bpf2a32[TMP_REG_1];
+	int idx_base, rsbp_sub;
+	u8 reg;
+
+	/* Offset to register stack (RSBP), must be unsigned for SUB */
+	rsbp_sub = imm8m(-ctx->bpf_rsbp_fp_off);
+
+	/* Check if RSBP is a self-pointer (i.e. main prog stack frame)
+	 * and skip restoring stacked BPF callee-saved registers, noting
+	 * any non-stacked BPF registers are already ARM callee-saved.
+	 */
+	emit(ARM_SUB_I(tmp[1], ARM_FP, rsbp_sub), ctx);
+	emit(ARM_LDR_I(ARM_LR, tmp[1], 0), ctx);
+	emit(ARM_CMP_R(tmp[1], ARM_LR), ctx);
+	_emit(ARM_COND_EQ, ARM_B(ctx->epilogue_main_skip), ctx);
+	idx_base = ctx->idx;
+
+	/* Deallocate BPF prog stack, leave SP -> top of register stack */
+	if (ctx->stack_size)
+		emit(ARM_ADD_I(ARM_SP, ARM_SP, imm8m(ctx->stack_size)), ctx);
+
+	/* Pop BPF callee-saved registers if stacked and this program
+	 * is in a subprog call frame.
+	 */
+	for (reg = BPF_REG_6; reg <= BPF_REG_FP; reg++) {
+		const s8 *arm = bpf2a32[reg];
+
+		if (!is_stacked(arm[1]))
+			continue;
+		emit(ARM_POP(BIT(tmp[1]) | BIT(tmp[0])), ctx);
+		emit_strd_i(tmp[1], ARM_LR, arm[1], ctx);
+	}
+
+	/* Calculate offset in first pass and save */
+	if (!ctx->epilogue_main_skip)
+		ctx->epilogue_main_skip = ctx->idx - idx_base - 1;
+
+	if (IS_ENABLED(CONFIG_FRAME_POINTER)) {
+		/* Load additional registers when using frame pointers. */
+		u16 reg_set = CALLEE_POP_MASK | 1 << ARM_SP;
+		emit(ARM_SUB_I(ARM_SP, ARM_FP, hweight16(reg_set) * 4), ctx);
+		emit(ARM_LDM(ARM_SP, reg_set), ctx);
+	} else {
+		/* Restore callee saved registers. */
+		emit(ARM_MOV_R(ARM_SP, ARM_FP), ctx);
+		emit(ARM_POP(CALLEE_POP_MASK), ctx);
+	}
 }
 
 /*
@@ -1637,12 +1758,11 @@ static void build_epilogue(struct jit_ctx *ctx)
  *
  * The above is for AEABI only, OABI does not support this function.
  */
-static int emit_kfunc_call(const struct bpf_insn *insn, struct jit_ctx *ctx, const u32 func)
+static int emit_kfunc_args(const struct bpf_insn *insn, int *ret_size, struct jit_ctx *ctx)
 {
 	const u8 arg_regs[] = { ARM_R0, ARM_R1, ARM_R2, ARM_R3 };
 	int nr_arg_regs = ARRAY_SIZE(arg_regs);
 	const s8 *tmp = bpf2a32[TMP_REG_1];
-	const s8 *r0 = bpf2a32[BPF_REG_0];
 	const struct btf_func_model *fm;
 	int stack_args_start = 0;
 	int arg_regs_idx = 0;
@@ -1679,7 +1799,7 @@ static int emit_kfunc_call(const struct bpf_insn *insn, struct jit_ctx *ctx, con
 				if (!stack_args_start)
 					stack_args_start = i;
 
-				stack_size = ALIGN(stack_size, STACK_ALIGNMENT);
+				stack_size = JIT_ALIGN(stack_size);
 				stack_size += 8;
 			}
 		} else {
@@ -1700,21 +1820,15 @@ static int emit_kfunc_call(const struct bpf_insn *insn, struct jit_ctx *ctx, con
 		goto out_regs;
 
 	/* Allocate double-word aligned space for stack args. */
-	stack_size = ALIGN(stack_size, STACK_ALIGNMENT);
+	stack_size = JIT_ALIGN(stack_size);
 	emit(ARM_SUB_I(ARM_SP, ARM_SP, imm8m(stack_size)), ctx);
 
 	/* Set up remaining stack-based args.*/
 	for (i = stack_args_start; i < fm->nr_args; i++) {
 		if (fm->arg_size[i] > sizeof(u32)) {
 			rd = arm_bpf_get_reg64(bpf2a32[BPF_REG_1 + i], tmp, ctx);
-			stack_off = ALIGN(stack_off, STACK_ALIGNMENT);
-			if (__LINUX_ARM_ARCH__ >= 6 ||
-			    ctx->cpu_architecture >= CPU_ARCH_ARMv5TE) {
-				emit(ARM_STRD_I(rd[1], ARM_SP, stack_off), ctx);
-			} else {
-				emit(ARM_STR_I(rd[1], ARM_SP, stack_off), ctx);
-				emit(ARM_STR_I(rd[0], ARM_SP, stack_off + 4), ctx);
-			}
+			stack_off = JIT_ALIGN(stack_off);
+			emit_strd_i(rd[1], ARM_SP, stack_off, ctx);
 			stack_off += 8;
 		} else {
 			rt = arm_bpf_get_reg32(bpf2a32[BPF_REG_1 + i][1], tmp[1], ctx);
@@ -1724,16 +1838,29 @@ static int emit_kfunc_call(const struct bpf_insn *insn, struct jit_ctx *ctx, con
 	}
 
 out_regs:
-	emit_a32_mov_i(tmp[1], func, false, ctx);
-	emit_blx_r(tmp[1], ctx);
-	if (stack_size)
-		emit(ARM_ADD_I(ARM_SP, ARM_SP, imm8m(stack_size)), ctx);
+	*ret_size = fm->ret_size;
+	return stack_size;
+}
 
-	/* Zero-extend if subreg returned since verifier will not. */
-	if (fm->ret_size == sizeof(u32))
-		emit(ARM_EOR_R(r0[0], r0[0], r0[0]), ctx);
+/* Set up callee args for helper function, return used stack. */
+static inline int emit_helper_args(struct jit_ctx *ctx)
+{
+	const s8 *r0 = bpf2a32[BPF_REG_0];
+	const s8 *r1 = bpf2a32[BPF_REG_1];
+	const s8 *r2 = bpf2a32[BPF_REG_2];
+	const s8 *r3 = bpf2a32[BPF_REG_3];
+	const s8 *r4 = bpf2a32[BPF_REG_4];
+	const s8 *r5 = bpf2a32[BPF_REG_5];
 
-	return 0;
+	/* Move BPF_R1, BPF_R2 -> ARM_R0:ARM_R1, ARM_R2:ARM_R3 */
+	emit_a32_mov_r64(true, r0, r1, ctx);
+	emit_a32_mov_r64(true, r1, r2, ctx);
+	/* Remaining 3 args on stack */
+	emit_push_r64(r5, ctx);
+	emit_push_r64(r4, ctx);
+	emit_push_r64(r3, ctx);
+
+	return 3 * sizeof(u64);
 }
 
 /*
@@ -1743,7 +1870,8 @@ out_regs:
  *	>0 - Successfully JITed a 16-byte BPF instruction
  *	<0 - Failed to JIT.
  */
-static int build_insn(const struct bpf_insn *insn, struct jit_ctx *ctx)
+static int build_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
+		      bool extra_pass)
 {
 	const u8 code = insn->code;
 	const s8 *dst = bpf2a32[insn->dst_reg];
@@ -1863,7 +1991,7 @@ static int build_insn(const struct bpf_insn *insn, struct jit_ctx *ctx)
 			break;
 		}
 		emit_udivmod(rd_lo, rd_lo, rt, ctx, BPF_OP(code), off);
-		arm_bpf_put_reg32(dst_lo, rd_lo, ctx);
+		arm_bpf_put_reg32(dst_lo, rd_lo, ARM_LR, ctx);
 		emit_cond_zext(dst, ctx);
 		break;
 	case BPF_ALU64 | BPF_DIV | BPF_K:
@@ -1881,7 +2009,7 @@ static int build_insn(const struct bpf_insn *insn, struct jit_ctx *ctx)
 			break;
 		}
 		emit_udivmod64(rd, rd, rs, ctx, BPF_OP(code), off);
-		arm_bpf_put_reg64(dst, rd, ctx);
+		arm_bpf_put_reg64(dst, rd, ARM_LR, ctx);
 		break;
 	/* dst = dst << imm */
 	/* dst = dst >> imm */
@@ -1997,7 +2125,7 @@ emit_bswap_uxt:
 			break;
 		}
 exit:
-		arm_bpf_put_reg64(dst, rd, ctx);
+		arm_bpf_put_reg64(dst, rd, tmp2[0], ctx);
 		break;
 	/* dst = imm64 */
 	case BPF_LD | BPF_IMM | BPF_DW:
@@ -2005,7 +2133,6 @@ exit:
 		u64 val = (u32)imm | (u64)insn[1].imm << 32;
 
 		emit_a32_mov_i64(dst, val, bpf_pseudo_func(insn), ctx);
-
 		return 1;
 	}
 	/* LDX: dst = *(size *)(src + off) */
@@ -2200,31 +2327,50 @@ go_jmp:
 	case BPF_JMP | BPF_CALL:
 	{
 		const s8 *r0 = bpf2a32[BPF_REG_0];
-		const s8 *r1 = bpf2a32[BPF_REG_1];
-		const s8 *r2 = bpf2a32[BPF_REG_2];
-		const s8 *r3 = bpf2a32[BPF_REG_3];
-		const s8 *r4 = bpf2a32[BPF_REG_4];
-		const s8 *r5 = bpf2a32[BPF_REG_5];
-		const u32 func = (u32)__bpf_call_base + (u32)imm;
+		int stack_size = 0, ret_size = 0;
+		bool func_addr_fixed;
+		u64 func_addr;
+		int err;
 
-		if (insn->src_reg == BPF_PSEUDO_KFUNC_CALL) {
-			int err = emit_kfunc_call(insn, ctx, func);
+		err = bpf_jit_get_func_addr(ctx->prog, insn, extra_pass,
+					    &func_addr, &func_addr_fixed);
+		if (err < 0)
+			return err;
 
-			if (err)
-				return err;
+		switch (insn->src_reg) {
+		case BPF_PSEUDO_KFUNC_CALL:
+					/* BPF kfunc call */
+			stack_size = emit_kfunc_args(insn, &ret_size, ctx);
+			if (stack_size < 0)
+				return stack_size;
 			break;
+		case BPF_PSEUDO_CALL:	/* BPF to BPF call, same ABI */
+			break;
+		case 0:			/* BPF helper call, u64 args & regs */
+			stack_size = emit_helper_args(ctx);
+			break;
+		default:
+			pr_err_once("unknown BPF_CALL type 0x%02x\n",
+				    insn->src_reg);
+			return -EINVAL;
 		}
 
-		emit_a32_mov_r64(true, r0, r1, ctx);
-		emit_a32_mov_r64(true, r1, r2, ctx);
-		emit_push_r64(r5, ctx);
-		emit_push_r64(r4, ctx);
-		emit_push_r64(r3, ctx);
-
-		emit_a32_mov_i(tmp[1], func, false, ctx);
+		/* Use fixed number of insns in case func_addr varies
+		 * with pass (e.g. bpf2bpf call).
+		 */
+		emit_a32_mov_i(tmp[1], func_addr, !func_addr_fixed, ctx);
 		emit_blx_r(tmp[1], ctx);
 
-		emit(ARM_ADD_I(ARM_SP, ARM_SP, imm8m(24)), ctx); // callee clean
+		/* Zero-extend if subreg returned (e.g. 32-bit ptr from kfunc)
+		 * since verifier will not zext in this case.
+		 */
+		if (ret_size == sizeof(u32))
+			emit(ARM_EOR_R(r0[0], r0[0], r0[0]), ctx);
+
+		/* Clean up any callee args on stack */
+		if (stack_size)
+			emit(ARM_ADD_I(ARM_SP, ARM_SP, imm8m(stack_size)), ctx);
+
 		break;
 	}
 	/* function return */
@@ -2256,7 +2402,7 @@ notyet:
 	return 0;
 }
 
-static int build_body(struct jit_ctx *ctx)
+static int build_body(struct jit_ctx *ctx, bool extra_pass)
 {
 	const struct bpf_prog *prog = ctx->prog;
 	unsigned int i;
@@ -2265,7 +2411,7 @@ static int build_body(struct jit_ctx *ctx)
 		const struct bpf_insn *insn = &(prog->insnsi[i]);
 		int ret;
 
-		ret = build_insn(insn, ctx);
+		ret = build_insn(insn, ctx, extra_pass);
 
 		/* It's used with loading the 64 bit immediate value. */
 		if (ret > 0) {
@@ -2302,11 +2448,19 @@ bool bpf_jit_needs_zext(void)
 	return true;
 }
 
+struct arm32_jit_data {
+	struct bpf_binary_header *header;
+	u8 *image;
+	struct jit_ctx ctx;
+};
+
 struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 {
 	struct bpf_prog *tmp, *orig_prog = prog;
 	struct bpf_binary_header *header;
+	struct arm32_jit_data *jit_data;
 	bool tmp_blinded = false;
+	bool extra_pass = false;
 	struct jit_ctx ctx;
 	unsigned int tmp_idx;
 	unsigned int image_size;
@@ -2331,9 +2485,28 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 		prog = tmp;
 	}
 
+	jit_data = prog->aux->jit_data;
+	if (!jit_data) {
+		jit_data = kzalloc(sizeof(*jit_data), GFP_KERNEL);
+		if (!jit_data) {
+			prog = orig_prog;
+			goto out;
+		}
+		prog->aux->jit_data = jit_data;
+	}
+	if (jit_data->ctx.offsets) {
+		ctx = jit_data->ctx;
+		image_ptr = jit_data->image;
+		header = jit_data->header;
+		image_size = sizeof(u32) * ctx.idx;
+		extra_pass = true;
+		goto skip_init_ctx;
+	}
+
 	memset(&ctx, 0, sizeof(ctx));
 	ctx.prog = prog;
 	ctx.cpu_architecture = cpu_architecture();
+	ctx.stack_size = JIT_ALIGN(prog->aux->stack_depth);
 
 	/* Not able to allocate memory for offsets[] , then
 	 * we must fall back to the interpreter
@@ -2341,7 +2514,7 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 	ctx.offsets = kcalloc(prog->len, sizeof(int), GFP_KERNEL);
 	if (ctx.offsets == NULL) {
 		prog = orig_prog;
-		goto out;
+		goto out_off;
 	}
 
 	/* 1) First pass to find the length of the JITed code,
@@ -2354,7 +2527,7 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 	 * being successful in the second pass, so just fall back
 	 * to the interpreter.
 	 */
-	if (build_body(&ctx)) {
+	if (build_body(&ctx, extra_pass)) {
 		prog = orig_prog;
 		goto out_off;
 	}
@@ -2403,8 +2576,11 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 		goto out_imms;
 	}
 
-	/* 2.) Actual pass to generate final JIT code */
+	/* 2.) Second pass to generate final JIT code, or an extra
+	 * pass to finalize JMP offsets if using bpf2bpf calls.
+	 */
 	ctx.target = (u32 *) image_ptr;
+skip_init_ctx:
 	ctx.idx = 0;
 
 	build_prologue(&ctx);
@@ -2412,8 +2588,9 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 	/* If building the body of the JITed code fails somehow,
 	 * we fall back to the interpretation.
 	 */
-	if (build_body(&ctx) < 0)
+	if (build_body(&ctx, extra_pass))
 		goto out_free;
+
 	build_epilogue(&ctx);
 
 	/* 3.) Extra pass to validate JITed Code */
@@ -2425,8 +2602,22 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 		/* there are 2 passes here */
 		bpf_jit_dump(prog->len, image_size, 2, ctx.target);
 
-	if (bpf_jit_binary_lock_ro(header))
-		goto out_free;
+	if (!prog->is_func || extra_pass) {
+		if (extra_pass && ctx.idx != jit_data->ctx.idx) {
+			pr_err_once("multi-func JIT bug %d != %d\n",
+				    ctx.idx, jit_data->ctx.idx);
+			bpf_jit_binary_free(header);
+			prog->bpf_func = NULL;
+			prog->jited = 0;
+			goto out_off;
+		}
+		if (bpf_jit_binary_lock_ro(header))
+			goto out_free;
+	} else {
+		jit_data->ctx = ctx;
+		jit_data->image = image_ptr;
+		jit_data->header = header;
+	}
 	prog->bpf_func = (void *)ctx.target;
 	prog->jited = 1;
 	prog->jited_len = image_size;
@@ -2436,8 +2627,13 @@ out_imms:
 	if (ctx.imm_count)
 		kfree(ctx.imms);
 #endif
+	if (!prog->is_func || extra_pass) {
 out_off:
-	kfree(ctx.offsets);
+		kfree(ctx.offsets);
+		kfree(jit_data);
+		prog->aux->jit_data = NULL;
+	}
+
 out:
 	if (tmp_blinded)
 		bpf_jit_prog_release_other(prog, prog == orig_prog ?
@@ -2454,4 +2650,10 @@ out_free:
 bool bpf_jit_supports_kfunc_call(void)
 {
 	return IS_ENABLED(CONFIG_AEABI);
+}
+
+/* Indicate the JIT backend supports mixing bpf2bpf and tailcalls. */
+bool bpf_jit_supports_subprog_tailcalls(void)
+{
+        return true;
 }
