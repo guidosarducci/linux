@@ -1403,23 +1403,21 @@ static inline void emit_ar_r(const u8 rd, const u8 rt, const u8 rm,
 	}
 }
 
-static int out_offset = -1; /* initialized on the first pass of build_body() */
 
+/* Helper bpf_tail_call(void *prog_ctx, struct bpf_array *array, u32 index) */
+#define cur_offset (ctx->idx - idx0)
+#define jmp_offset (out_offset - (cur_offset) - 2)
 static int emit_bpf_tail_call(struct jit_ctx *ctx)
 {
-
-	/* bpf_tail_call(void *prog_ctx, struct bpf_array *array, u64 index) */
 	const s8 *r2 = bpf2a32[BPF_REG_2];
 	const s8 *r3 = bpf2a32[BPF_REG_3];
 	const s8 *tmp = bpf2a32[TMP_REG_1];
 	const s8 *tmp2 = bpf2a32[TMP_REG_2];
 	const s8 *tcc = bpf2a32[TCALL_CNT];
-	const s8 *tc;
+	static int out_offset = -1; /* initialized on JIT 1st pass */
 	const int idx0 = ctx->idx;
-#define cur_offset (ctx->idx - idx0)
-#define jmp_offset (out_offset - (cur_offset) - 2)
-	u32 lo, hi;
-	s8 r_array, r_index;
+	u32 tc_max;
+	s8 tc, r_array, r_index;
 	int off;
 
 	/* if (index >= array->map.max_entries)
@@ -1444,15 +1442,12 @@ static int emit_bpf_tail_call(struct jit_ctx *ctx)
 	 *	goto out;
 	 * tail_call_cnt++;
 	 */
-	lo = (u32)MAX_TAIL_CALL_CNT;
-	hi = (u32)((u64)MAX_TAIL_CALL_CNT >> 32);
-	tc = arm_bpf_get_reg64(tcc, tmp, ctx);
-	emit(ARM_CMP_I(tc[0], hi), ctx);
-	_emit(ARM_COND_EQ, ARM_CMP_I(tc[1], lo), ctx);
+	tc_max = (u32)MAX_TAIL_CALL_CNT;
+	tc = arm_bpf_get_reg32(tcc[1], tmp[1], ctx);
+	emit(ARM_CMP_I(tc, tc_max), ctx);
 	_emit(ARM_COND_CS, ARM_B(jmp_offset), ctx);
-	emit(ARM_ADDS_I(tc[1], tc[1], 1), ctx);
-	emit(ARM_ADC_I(tc[0], tc[0], 0), ctx);
-	arm_bpf_put_reg64(tcc, tmp, ARM_LR, ctx);
+	emit(ARM_ADD_I(tc, tc, 1), ctx);
+	arm_bpf_put_reg32(tcc[1], tc, tmp[0], ctx);
 
 	/* prog = array->ptrs[index]
 	 * if (prog == NULL)
@@ -1485,9 +1480,9 @@ static int emit_bpf_tail_call(struct jit_ctx *ctx)
 		return -1;
 	}
 	return 0;
+}
 #undef cur_offset
 #undef jmp_offset
-}
 
 /* 0xabcd => 0xcdab */
 static inline void emit_rev16(const u8 rd, const u8 rn, struct jit_ctx *ctx)
