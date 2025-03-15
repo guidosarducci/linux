@@ -1403,6 +1403,261 @@ static inline void emit_ar_r(const u8 rd, const u8 rt, const u8 rm,
 	}
 }
 
+/* Atomic read-modify-write (32-bit kernel fallback):
+ *   lock *(u32 *)(dst_reg + off) <op>= src_reg
+ *   src_reg = atomic_fetch_<op>(dst_reg + off, src_reg)
+ *   src_reg = atomic_xchg(dst_reg + off, src_reg)
+ */
+static void emit_atomic_r(const s8 dst, const s8 src, s16 off, u8 op,
+			      struct jit_ctx *ctx)
+{
+	const s8 *tmp = bpf2a32[TMP_REG_1];
+	const s8 *tmp2 = bpf2a32[TMP_REG_2];
+	u32 exclude_mask = 0;
+	u32 addr = 0;
+	s8 rd, rs;
+
+	/* Pull registers if stacked */
+	rd = arm_bpf_get_reg32(dst, tmp[1], ctx);
+	rs = arm_bpf_get_reg32(src, tmp2[1], ctx);
+
+	/* Don't clobber return value */
+	if (op & BPF_FETCH)
+		exclude_mask = BIT(rs);
+
+	/* Push caller-saved registers on stack */
+	emit(ARM_PUSH(CALLER_MASK & ~exclude_mask), ctx);
+
+	/*
+	 * Argument 1: dst+off if xchg, otherwise src, passed in register r0
+	 * Argument 2: src if xchg, otherwise dst+off, passed in register r1
+	 */
+	emit_mov_i(tmp[0], off, false, ctx);
+	if (op == BPF_XCHG) {
+		emit(ARM_MOV_R(ARM_R1, rs), ctx);
+		emit(ARM_ADD_R(ARM_R0, rd, tmp[0]), ctx);
+	} else {
+		emit(ARM_ADD_R(ARM_R1, rd, tmp[0]), ctx);
+		emit(ARM_MOV_R(ARM_R0, rs), ctx);
+	}
+
+	/* Emit function call */
+	switch (op) {
+	case BPF_ADD:
+		addr = (u32)&atomic_add;
+		break;
+	case BPF_ADD | BPF_FETCH:
+		addr = (u32)&atomic_fetch_add;
+		break;
+	case BPF_SUB:
+		addr = (u32)&atomic_sub;
+		break;
+	case BPF_SUB | BPF_FETCH:
+		addr = (u32)&atomic_fetch_sub;
+		break;
+	case BPF_OR:
+		addr = (u32)&atomic_or;
+		break;
+	case BPF_OR | BPF_FETCH:
+		addr = (u32)&atomic_fetch_or;
+		break;
+	case BPF_AND:
+		addr = (u32)&atomic_and;
+		break;
+	case BPF_AND | BPF_FETCH:
+		addr = (u32)&atomic_fetch_and;
+		break;
+	case BPF_XOR:
+		addr = (u32)&atomic_xor;
+		break;
+	case BPF_XOR | BPF_FETCH:
+		addr = (u32)&atomic_fetch_xor;
+		break;
+	case BPF_XCHG:
+		addr = (u32)&atomic_xchg;
+		break;
+	}
+	emit_mov_i(tmp2[0], addr, false, ctx);
+	emit_blx_r(tmp2[0], ctx);
+
+	/* Update src register with old value, if specified */
+	if (op & BPF_FETCH)
+		arm_bpf_put_reg32(src, ARM_R0, tmp[0], ctx);
+
+	/* Restore caller-saved registers (except any fetched value) */
+	emit(ARM_POP(CALLER_MASK & ~exclude_mask), ctx);
+}
+
+/* Atomic read-modify-write (64-bit kernel fallback):
+ *   lock *(u64 *)(dst_reg + off) <op>= src_reg
+ *   src_reg = atomic_fetch_<op>(dst_reg + off, src_reg)
+ *   src_reg = atomic_xchg(dst_reg + off, src_reg)
+ */
+static void emit_atomic_r64(const s8 dst, const s8 src[], s16 off, u8 op,
+			    struct jit_ctx *ctx)
+{
+	const s8 *tmp = bpf2a32[TMP_REG_1];
+	const s8 *tmp2 = bpf2a32[TMP_REG_2];
+	const s8 *r0 = bpf2a32[BPF_REG_0];
+	const s8 *r1 = bpf2a32[BPF_REG_1];
+	u32 exclude_mask = 0;
+	u32 addr = 0;
+	const s8 *rs;
+	s8 rd;
+
+	/* Pull registers if stacked */
+	rd = arm_bpf_get_reg32(dst, tmp[1], ctx);
+	rs = arm_bpf_get_reg64(src, tmp2, ctx);
+
+	/* Don't clobber return value */
+	if (op & BPF_FETCH)
+		exclude_mask = BIT(rs[1]) | BIT(rs[0]);
+
+	/* Push caller-saved registers on stack */
+	emit(ARM_PUSH(CALLER_MASK & ~exclude_mask), ctx);
+
+	/*
+	 * Argument 1: 32-bit dst+off if xchg, otherwise src in register r0-r1
+	 * Argument 2: 64-bit src if xchg, otherwise dst+off in register r2-r3
+	 */
+	emit_mov_i(tmp[0], off, false, ctx);
+	emit(ARM_ADD_R(tmp[1], rd, tmp[0]), ctx);
+	if (op == BPF_XCHG) {
+		arm_bpf_put_reg64(r1, rs, tmp[0], ctx);
+		emit(ARM_MOV_R(r0[1], tmp[1]), ctx);
+	} else {
+		arm_bpf_put_reg64(r0, rs, tmp[0], ctx);
+		emit(ARM_MOV_R(r1[1], tmp[1]), ctx);
+	}
+
+	/* Emit function call */
+	switch (op) {
+	case BPF_ADD:
+		addr = (u32)&atomic64_add;
+		break;
+	case BPF_ADD | BPF_FETCH:
+		addr = (u32)&atomic64_fetch_add;
+		break;
+	case BPF_SUB:
+		addr = (u32)&atomic64_sub;
+		break;
+	case BPF_SUB | BPF_FETCH:
+		addr = (u32)&atomic64_fetch_sub;
+		break;
+	case BPF_OR:
+		addr = (u32)&atomic64_or;
+		break;
+	case BPF_OR | BPF_FETCH:
+		addr = (u32)&atomic64_fetch_or;
+		break;
+	case BPF_AND:
+		addr = (u32)&atomic64_and;
+		break;
+	case BPF_AND | BPF_FETCH:
+		addr = (u32)&atomic64_fetch_and;
+		break;
+	case BPF_XOR:
+		addr = (u32)&atomic64_xor;
+		break;
+	case BPF_XOR | BPF_FETCH:
+		addr = (u32)&atomic64_fetch_xor;
+		break;
+	case BPF_XCHG:
+		addr = (u32)&atomic64_xchg;
+		break;
+	}
+	emit_mov_i(tmp[0], addr, false, ctx);
+	emit_blx_r(tmp[0], ctx);
+
+	/* Update src register with old value, if specified */
+	if (op & BPF_FETCH)
+		arm_bpf_put_reg64(src, r0, tmp[0], ctx);
+
+	/* Restore caller-saved registers (except any fetched value) */
+	emit(ARM_POP(CALLER_MASK & ~exclude_mask), ctx);
+}
+
+/* Atomic compare-and-exchange (32-bit, kernel fallback):
+ *   r0 = atomic_cmpxchg(dst_reg + off, r0, src_reg)
+ */
+static void emit_cmpxchg_r(const s8 dst, const s8 src, s16 off, struct jit_ctx *ctx)
+{
+	const s8 *r0 = bpf2a32[BPF_REG_0];
+	const s8 *tmp = bpf2a32[TMP_REG_1];
+	const s8 *tmp2 = bpf2a32[TMP_REG_2];
+	const u32 addr = (u32)&atomic_cmpxchg;
+	u32 exclude_mask = BIT(r0[1]) | BIT(r0[0]);
+	s8 rd, rs;
+
+	/* Pull registers if stacked */
+	rd = arm_bpf_get_reg32(dst, tmp[1], ctx);
+	rs = arm_bpf_get_reg32(src, tmp2[1], ctx);
+
+	/* Push caller-saved registers on stack */
+	emit(ARM_PUSH(CALLER_MASK & ~exclude_mask), ctx);
+
+	/*
+	 * Argument 1: 32-bit dst+off, passed in register r0
+	 * Argument 2: 32-bit r0, passed in register r1
+	 * Argument 3: 32-bit src, passed in register r2
+	 */
+	emit_mov_i(tmp[0], off, false, ctx);
+	emit(ARM_ADD_R(tmp2[0], rd, tmp[0]), ctx);
+	emit(ARM_MOV_R(tmp[0], rs), ctx);
+	emit(ARM_MOV_R(ARM_R1, r0[1]), ctx);
+	emit(ARM_MOV_R(ARM_R0, tmp2[0]), ctx);
+	emit(ARM_MOV_R(ARM_R2, tmp[0]), ctx);
+
+	/* Emit function call */
+	emit_mov_i(tmp2[0], addr, false, ctx);
+	emit_blx_r(tmp2[0], ctx);
+
+	/* Restore caller-saved registers (except the return value) */
+	emit(ARM_POP(CALLER_MASK & ~exclude_mask), ctx);
+}
+
+/* Atomic compare-and-exchange (64-bit, kernel fallback):
+ *   r0 = atomic_cmpxchg(dst_reg + off, r0, src_reg)
+ */
+static void emit_cmpxchg_r64(const s8 dst, const s8 src[], s16 off, struct jit_ctx *ctx)
+{
+	const s8 *r0 = bpf2a32[BPF_REG_0];
+	const s8 *r1 = bpf2a32[BPF_REG_1];
+	const s8 *tmp = bpf2a32[TMP_REG_1];
+	const s8 *tmp2 = bpf2a32[TMP_REG_2];
+	const u32 addr = (u32)&atomic64_cmpxchg;
+	u32 exclude_mask = BIT(r0[1]) | BIT(r0[0]);
+	u32 stack_arg_mask;
+	const s8 *rs;
+	s8 rd;
+
+	/* Pull registers if stacked */
+	rd = arm_bpf_get_reg32(dst, tmp[1], ctx);
+	rs = arm_bpf_get_reg64(src, tmp2, ctx);
+
+	/* Push caller-saved registers on stack */
+	emit(ARM_PUSH(CALLER_MASK & ~exclude_mask), ctx);
+
+	/*
+	 * Argument 1: 32-bit dst+off, passed in register r0 (r1 unused)
+	 * Argument 2: 64-bit r0, passed in registers r2-r3
+	 * Argument 3: 64-bit src, passed on stack
+	 */
+	stack_arg_mask = BIT(rs[1]) | BIT(rs[0]);
+	emit(ARM_PUSH(stack_arg_mask), ctx);
+	emit_mov_i(tmp[0], off, false, ctx);
+	emit(ARM_ADD_R(tmp2[0], rd, tmp[0]), ctx);
+	emit_a32_mov_r64(true, r1, r0, ctx);
+	emit(ARM_MOV_R(ARM_R0, tmp2[0]), ctx);
+
+	/* Emit function call */
+	emit_mov_i(tmp[0], addr, false, ctx);
+	emit_blx_r(tmp[0], ctx);
+
+	/* Restore caller-saved registers (except the return value) */
+	emit(ARM_ADD_I(ARM_SP, ARM_SP, 4 * hweight16(stack_arg_mask)), ctx);
+	emit(ARM_POP(CALLER_MASK & ~exclude_mask), ctx);
+}
 
 /* Helper bpf_tail_call(void *prog_ctx, struct bpf_array *array, u32 index) */
 #define cur_offset (ctx->idx - idx0)
@@ -2168,8 +2423,57 @@ exit:
 		break;
 	/* Atomic ops */
 	case BPF_STX | BPF_ATOMIC | BPF_W:
+		switch (imm) {
+		/* lock *(u32 *)(dst_reg + off) <op>= src_reg */
+		case BPF_ADD:
+		case BPF_AND:
+		case BPF_OR:
+		case BPF_XOR:
+		/* src_reg = atomic_fetch_<op>(dst_reg + off, src_reg) */
+		case BPF_ADD | BPF_FETCH:
+		case BPF_AND | BPF_FETCH:
+		case BPF_OR | BPF_FETCH:
+		case BPF_XOR | BPF_FETCH:
+		/* src_reg = atomic_xchg(dst_reg + off, src_reg) */
+		case BPF_XCHG:
+			emit_atomic_r(dst_lo, src_lo, off, imm, ctx);
+			if (imm & BPF_FETCH)
+				emit_cond_zext(src, ctx);
+			break;
+		/* r0 = atomic_cmpxchg(dst_reg + off, r0, src_reg) */
+		case BPF_CMPXCHG:
+			emit_cmpxchg_r(dst_lo, src_lo, off, ctx);
+			/* Result zero-extension inserted by verifier */
+			break;
+		default:
+			goto notyet;
+		}
+		break;
+	/* Atomic ops (64-bit) */
 	case BPF_STX | BPF_ATOMIC | BPF_DW:
-		goto notyet;
+		/* lock *(u64 *)(dst_reg + off) <op>= src_reg */
+		switch (imm) {
+		case BPF_ADD:
+		case BPF_AND:
+		case BPF_OR:
+		case BPF_XOR:
+		/* src_reg = atomic_fetch_<op>(dst_reg + off, src_reg) */
+		case BPF_ADD | BPF_FETCH:
+		case BPF_AND | BPF_FETCH:
+		case BPF_OR | BPF_FETCH:
+		case BPF_XOR | BPF_FETCH:
+		/* src_reg = atomic_xchg(dst_reg + off, src_reg) */
+		case BPF_XCHG:
+			emit_atomic_r64(dst_lo, src, off, imm, ctx);
+			break;
+		/* r0 = atomic_cmpxchg(dst_reg + off, r0, src_reg) */
+		case BPF_CMPXCHG:
+			emit_cmpxchg_r64(dst_lo, src, off, ctx);
+			break;
+		default:
+			goto notyet;
+		}
+		break;
 	/* STX: *(size *)(dst + off) = src */
 	case BPF_STX | BPF_MEM | BPF_W:
 	case BPF_STX | BPF_MEM | BPF_H:
