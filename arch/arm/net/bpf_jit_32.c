@@ -1298,7 +1298,8 @@ static inline void emit_ldx_r(const s8 dst[], const s8 src,
 	case BPF_W:
 		/* Load a Word */
 		emit(ARM_LDR_I(rd[1], rm, off), ctx);
-		emit_cond_zext(rd, ctx);
+//FIXME		emit_cond_zext(rd, ctx);
+		emit_a32_mov_i(rd[0], 0, false, ctx); // FORCE ZEXT
 		break;
 	case BPF_DW:
 		/* Load a Double Word */
