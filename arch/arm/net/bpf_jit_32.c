@@ -179,8 +179,6 @@ static const s8 bpf2a32[][2] = {
  *
  * prog			:	bpf_prog
  * idx			:	index of current last JITed instruction.
- * prologue_bytes	:	bytes used in prologue.
- * epilogue_offset	:	offset of epilogue starting.
  * offsets		:	array of BPF instruction offsets in
  *				JITed code.
  * target		:	final JITed code.
@@ -193,8 +191,6 @@ static const s8 bpf2a32[][2] = {
 struct jit_ctx {
 	const struct bpf_prog *prog;
 	unsigned int idx;
-	unsigned int prologue_bytes;
-	unsigned int epilogue_offset;
 	unsigned int cpu_architecture;
 	u32 flags;
 	u32 *offsets;
@@ -417,8 +413,7 @@ static u16 imm_offset(u32 k, struct jit_ctx *ctx)
 		ctx->imms[i] = k;
 
 	/* constants go just after the epilogue */
-	offset =  ctx->offsets[ctx->prog->len - 1] * 4;
-	offset += ctx->prologue_bytes;
+	offset =  ctx->offsets[ctx->prog->len] * 4; /* epilogue start */
 	offset += ctx->epilogue_bytes;
 	offset += i * 4;
 
@@ -447,8 +442,8 @@ static inline int bpf2a32_offset(int bpf_to, int bpf_from,
 
 	if (ctx->target == NULL)
 		return 0;
-	to = ctx->offsets[bpf_to];
-	from = ctx->offsets[bpf_from];
+	to = ctx->offsets[bpf_to + 1];
+	from = ctx->offsets[bpf_from + 1];
 
 	return to - from - 1;
 }
@@ -499,7 +494,7 @@ static inline int epilogue_offset(const struct jit_ctx *ctx)
 	/* No need for 1st dummy run */
 	if (ctx->target == NULL)
 		return 0;
-	to = ctx->epilogue_offset;
+	to = ctx->offsets[ctx->prog->len]; /* epilogue start */
 	from = ctx->idx;
 
 	return to - from - 2;
@@ -2710,23 +2705,26 @@ static int build_body(struct jit_ctx *ctx, bool extra_pass)
 		const struct bpf_insn *insn = &(prog->insnsi[i]);
 		int ret;
 
+		/* Save start offset of each JITed insn. */
+		if (ctx->target == NULL)
+			ctx->offsets[i] = ctx->idx;
+
 		ret = build_insn(insn, ctx, extra_pass);
 
 		/* It's used with loading the 64 bit immediate value. */
 		if (ret > 0) {
 			i++;
-			if (ctx->target == NULL)
-				ctx->offsets[i] = ctx->idx;
 			continue;
 		}
-
-		if (ctx->target == NULL)
-			ctx->offsets[i] = ctx->idx;
 
 		/* If unsuccessful, return with error code */
 		if (ret)
 			return ret;
 	}
+	/* Finally save epilogue offset. */
+	if (ctx->target == NULL)
+		ctx->offsets[i] = ctx->idx;
+
 	return 0;
 }
 
@@ -2766,7 +2764,6 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 	bool tmp_blinded = false;
 	bool extra_pass = false;
 	struct jit_ctx ctx;
-	unsigned int tmp_idx;
 	unsigned int image_size;
 	u8 *image_ptr;
 
@@ -2812,10 +2809,10 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 	ctx.cpu_architecture = cpu_architecture();
 	ctx.stack_size = JIT_ALIGN(prog->aux->stack_depth);
 
-	/* Not able to allocate memory for offsets[] , then
+	/* Not able to allocate memory for offsets[], then
 	 * we must fall back to the interpreter
 	 */
-	ctx.offsets = kcalloc(prog->len, sizeof(int), GFP_KERNEL);
+	ctx.offsets = kcalloc(prog->len + 1, sizeof(int), GFP_KERNEL);
 	if (ctx.offsets == NULL) {
 		prog = orig_prog;
 		goto out_off;
@@ -2831,21 +2828,18 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 	 * being successful in the second pass, so just fall back
 	 * to the interpreter.
 	 */
+	build_prologue(&ctx);
+
 	if (build_body(&ctx, extra_pass)) {
 		prog = orig_prog;
 		goto out_off;
 	}
 
-	tmp_idx = ctx.idx;
-	build_prologue(&ctx);
-	ctx.prologue_bytes = (ctx.idx - tmp_idx) * 4;
-
-	ctx.epilogue_offset = ctx.idx;
-
-#if __LINUX_ARM_ARCH__ < 7
-	tmp_idx = ctx.idx;
 	build_epilogue(&ctx);
-	ctx.epilogue_bytes = (ctx.idx - tmp_idx) * 4;
+
+	/* On pre-ARMv7 append a literal pool of 32-bit imm constants. */
+#if __LINUX_ARM_ARCH__ < 7
+	ctx.epilogue_bytes = (ctx.idx - ctx.offsets[prog->len]) * 4;
 
 	ctx.idx += ctx.imm_count;
 	if (ctx.imm_count) {
@@ -2855,9 +2849,6 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 			goto out_off;
 		}
 	}
-#else
-	/* there's nothing about the epilogue on ARMv7 */
-	build_epilogue(&ctx);
 #endif
 	/* Now we can get the actual image size of the JITed arm code.
 	 * Currently, we are not considering the THUMB-2 instructions
@@ -2931,12 +2922,21 @@ skip_init_ctx:
 
 	DEBUG_PASS(3);
 
+	if (!prog->is_func || extra_pass) {
+		int i;
+		/* BPF line info expects array of byte-offsets mapping each
+		 * xlated insn to the end of its JITed insn (following byte),
+		 * so convert to bytes and drop the first array elem mapping
+		 * the proglogue.
+		 */
+		for (i = 0; i <= prog->len; i++)
+			ctx.offsets[i] *= 4;
+		bpf_prog_fill_jited_linfo(prog, ctx.offsets + 1);
 out_imms:
 #if __LINUX_ARM_ARCH__ < 7
-	if (ctx.imm_count)
-		kfree(ctx.imms);
+		if (ctx.imm_count)
+			kfree(ctx.imms);
 #endif
-	if (!prog->is_func || extra_pass) {
 out_off:
 		kfree(ctx.offsets);
 		kfree(jit_data);
