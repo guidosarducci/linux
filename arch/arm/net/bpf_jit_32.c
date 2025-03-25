@@ -2086,25 +2086,79 @@ out_regs:
 	return stack_size;
 }
 
-/* Set up callee args for helper function, return used stack. */
-static inline int emit_helper_args(struct jit_ctx *ctx)
+/* Look up helper prototype since kernel exposes no such function. */
+static const struct bpf_func_proto *
+bpf_jit_get_helper_proto(const s32 imm, const struct jit_ctx *ctx)
 {
+	static const struct bpf_func_proto *helpers[__BPF_FUNC_MAX_ID];
+	const struct bpf_func_proto *proto;
+	static bool scanned = false;
+	int i;
+
+	if (!scanned) {
+		for (i = 1; i < ARRAY_SIZE(helpers); i++) {
+			helpers[i]= bpf_base_func_proto(i, ctx->prog);
+//FIXME			pr_info("helpers: id=%d proto=%px imm=%d\n",
+//FIXME				i, helpers[i], helpers[i] ? helpers[i]->func - __bpf_call_base : 0);
+		}
+		scanned = true;
+	}
+
+	for (i = 1; i < ARRAY_SIZE(helpers); i++) {
+		proto = helpers[i];
+		if (proto && imm == (proto->func - __bpf_call_base))
+			return proto;
+	}
+
+	return NULL;
+}
+
+/* Set up callee args for helper function, return used stack. */
+static int emit_helper_args(const s32 imm, struct jit_ctx *ctx)
+{
+	const struct bpf_func_proto *proto;
 	const s8 *r0 = bpf2a32[BPF_REG_0];
 	const s8 *r1 = bpf2a32[BPF_REG_1];
 	const s8 *r2 = bpf2a32[BPF_REG_2];
 	const s8 *r3 = bpf2a32[BPF_REG_3];
 	const s8 *r4 = bpf2a32[BPF_REG_4];
 	const s8 *r5 = bpf2a32[BPF_REG_5];
+	int nargs = 5, stack = 0;
 
-	/* Move BPF_R1, BPF_R2 -> ARM_R0:ARM_R1, ARM_R2:ARM_R3 */
-	emit_a32_mov_r64(true, r0, r1, ctx);
-	emit_a32_mov_r64(true, r1, r2, ctx);
-	/* Remaining 3 args on stack */
-	emit_push_r64(r5, ctx);
-	emit_push_r64(r4, ctx);
-	emit_push_r64(r3, ctx);
+	proto = bpf_jit_get_helper_proto(imm, ctx);
+	if (!proto) {
+//FIXME		pr_warn("emit_helper_args: no proto for imm=%d\n", imm);
+		goto no_proto;
+	}
 
-	return 3 * sizeof(u64);
+	for (nargs = 0; nargs < 5; nargs++)
+		if (proto->arg_type[nargs] == ARG_DONTCARE)
+			break;
+//FIXME	pr_info("emit_helper_args: nargs=%d for imm=%d\n", nargs, imm);
+no_proto:
+	switch(nargs) {
+	case 5:
+		emit_push_r64(r5, ctx);
+		stack += sizeof(u64);
+		fallthrough;
+	case 4:
+		emit_push_r64(r4, ctx);
+		stack += sizeof(u64);
+		fallthrough;
+	case 3:
+		emit_push_r64(r3, ctx);
+		stack += sizeof(u64);
+		fallthrough;
+	case 2:
+	case 1:
+		emit_a32_mov_r64(true, r0, r1, ctx);
+		if (nargs > 1)
+			emit_a32_mov_r64(true, r1, r2, ctx);
+	default:
+		break;
+	}
+
+	return stack;
 }
 
 /*
@@ -2634,19 +2688,20 @@ go_jmp:
 		case BPF_PSEUDO_KFUNC_CALL:
 					/* BPF kfunc call */
 			stack_size = emit_kfunc_args(insn, &ret_size, ctx);
-			if (stack_size < 0)
-				return stack_size;
 			break;
 		case BPF_PSEUDO_CALL:	/* BPF to BPF call, same ABI */
 			break;
 		case 0:			/* BPF helper call, u64 args & regs */
-			stack_size = emit_helper_args(ctx);
+			stack_size = emit_helper_args(insn->imm, ctx);
 			break;
 		default:
 			pr_err_once("unknown BPF_CALL type 0x%02x\n",
 				    insn->src_reg);
 			return -EINVAL;
 		}
+
+		if (stack_size < 0)
+			return stack_size;
 
 		/* Use fixed number of insns in case func_addr varies
 		 * with pass (e.g. bpf2bpf call).
