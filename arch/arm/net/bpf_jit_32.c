@@ -1583,6 +1583,160 @@ static void build_epilogue(struct jit_ctx *ctx)
 }
 
 /*
+ * Input parameters of function in 32-bit ARM architecture:
+ * The first four word-sized parameters passed to a function will be
+ * transferred in registers R0-R3. Sub-word sized arguments (e.g. char)
+ * will still use a whole register.
+ * Arguments larger than a word will be passed in multiple registers.
+ * If more arguments are passed, the fifth and subsequent words will be passed
+ * on the stack.
+ *
+ * The first four args of a function will be considered for
+ * putting into the 32-bit registers R0, R1, R2 and R3.
+ *
+ * Two 32-bit registers are used to pass a 64-bit arg.
+ *
+ * For example,
+ * void foo(u32 a, u32 b, u32 c, u32 d, u32 e):
+ *      u32 a: R0
+ *      u32 b: R1
+ *      u32 c: R2
+ *      u32 d: R3
+ *      u32 e: stack
+ *
+ * void foo(u64 a, u32 b, u32 c, u32 d):
+ *      u64 a: R0 (lo32) R1 (hi32)
+ *      u32 b: R2
+ *      u32 c: R3
+ *      u32 d: stack
+ *
+ * void foo(u32 a, u64 b, u32 c, u32 d):
+ *       u32 a: R0
+ *       u64 b: R2 (lo32) R3 (hi32)
+ *       u32 c: stack
+ *       u32 d: stack
+ *
+ * void foo(u32 a, u32 b, u64 c, u32 d):
+ *       u32 a: R0
+ *       u32 b: R1
+ *       u64 c: R2 (lo32) R3 (hi32)
+ *       u32 d: stack
+ *
+ * void foo(u64 a, u64 b):
+ *       u64 a: R0 (lo32) R1 (hi32)
+ *       u64 b: R2 (lo32) R3 (hi32)
+ *
+ * The return value will be stored in the R0 (and R1 for 64bit value).
+ *
+ * For example,
+ * u32 foo(u32 a, u32 b, u32 c):
+ *      return value: R0
+ *
+ * u64 foo(u32 a, u32 b, u32 c):
+ *      return value: R0 (lo32) R1 (hi32)
+ *
+ * The above is for AEABI only, OABI does not support this function.
+ */
+static int emit_kfunc_call(const struct bpf_insn *insn, struct jit_ctx *ctx, const u32 func)
+{
+	const u8 arg_regs[] = { ARM_R0, ARM_R1, ARM_R2, ARM_R3 };
+	int nr_arg_regs = ARRAY_SIZE(arg_regs);
+	const s8 *tmp = bpf2a32[TMP_REG_1];
+	const s8 *r0 = bpf2a32[BPF_REG_0];
+	const struct btf_func_model *fm;
+	int stack_args_start = 0;
+	int arg_regs_idx = 0;
+	int stack_size = 0;
+	int stack_off = 0;
+	const s8 *rd;
+	s8 rt;
+	int i;
+
+	fm = bpf_jit_find_kfunc_model(ctx->prog, insn);
+	if (!fm)
+		return -EINVAL;
+
+	/* Set up register-based args and calculate size for stack args.*/
+	for (i = 0; i < fm->nr_args; i++) {
+		if (fm->arg_size[i] > sizeof(u32)) {
+			rd = arm_bpf_get_reg64(bpf2a32[BPF_REG_1 + i], tmp, ctx);
+
+			if (arg_regs_idx + 1 < nr_arg_regs) {
+				/*
+				 * AAPCS states:
+				 * A double-word sized type is passed in two
+				 * consecutive registers (e.g., r0 and r1, or
+				 * r2 and r3). The content of the registers is
+				 * as if the value had been loaded from memory
+				 * representation with a single LDM instruction.
+				 */
+				if (arg_regs_idx & 1)
+					arg_regs_idx++;
+
+				emit(ARM_MOV_R(arg_regs[arg_regs_idx++], rd[1]), ctx);
+				emit(ARM_MOV_R(arg_regs[arg_regs_idx++], rd[0]), ctx);
+			} else {
+				if (!stack_args_start)
+					stack_args_start = i;
+
+				stack_size = ALIGN(stack_size, STACK_ALIGNMENT);
+				stack_size += 8;
+			}
+		} else {
+			rt = arm_bpf_get_reg32(bpf2a32[BPF_REG_1 + i][1], tmp[1], ctx);
+
+			if (arg_regs_idx  < nr_arg_regs) {
+				emit(ARM_MOV_R(arg_regs[arg_regs_idx++], rt), ctx);
+			} else {
+				if (!stack_args_start)
+					stack_args_start = i;
+
+				stack_size += 4;
+			}
+		}
+	}
+
+	if (!stack_args_start)
+		goto out_regs;
+
+	/* Allocate double-word aligned space for stack args. */
+	stack_size = ALIGN(stack_size, STACK_ALIGNMENT);
+	emit(ARM_SUB_I(ARM_SP, ARM_SP, imm8m(stack_size)), ctx);
+
+	/* Set up remaining stack-based args.*/
+	for (i = stack_args_start; i < fm->nr_args; i++) {
+		if (fm->arg_size[i] > sizeof(u32)) {
+			rd = arm_bpf_get_reg64(bpf2a32[BPF_REG_1 + i], tmp, ctx);
+			stack_off = ALIGN(stack_off, STACK_ALIGNMENT);
+			if (__LINUX_ARM_ARCH__ >= 6 ||
+			    ctx->cpu_architecture >= CPU_ARCH_ARMv5TE) {
+				emit(ARM_STRD_I(rd[1], ARM_SP, stack_off), ctx);
+			} else {
+				emit(ARM_STR_I(rd[1], ARM_SP, stack_off), ctx);
+				emit(ARM_STR_I(rd[0], ARM_SP, stack_off + 4), ctx);
+			}
+			stack_off += 8;
+		} else {
+			rt = arm_bpf_get_reg32(bpf2a32[BPF_REG_1 + i][1], tmp[1], ctx);
+			emit(ARM_STR_I(rt, ARM_SP, stack_off), ctx);
+			stack_off += 4;
+		}
+	}
+
+out_regs:
+	emit_a32_mov_i(tmp[1], func, false, ctx);
+	emit_blx_r(tmp[1], ctx);
+	if (stack_size)
+		emit(ARM_ADD_I(ARM_SP, ARM_SP, imm8m(stack_size)), ctx);
+
+	/* Zero-extend if subreg returned since verifier will not. */
+	if (fm->ret_size == sizeof(u32))
+		emit(ARM_EOR_R(r0[0], r0[0], r0[0]), ctx);
+
+	return 0;
+}
+
+/*
  * Convert a BPF insn to native insns, i.e. JIT-compile one BPF insn.
  * Returns :
  *	0  - Successfully JITed an 8-byte BPF instruction
@@ -2053,6 +2207,14 @@ go_jmp:
 		const s8 *r5 = bpf2a32[BPF_REG_5];
 		const u32 func = (u32)__bpf_call_base + (u32)imm;
 
+		if (insn->src_reg == BPF_PSEUDO_KFUNC_CALL) {
+			int err = emit_kfunc_call(insn, ctx, func);
+
+			if (err)
+				return err;
+			break;
+		}
+
 		emit_a32_mov_r64(true, r0, r1, ctx);
 		emit_a32_mov_r64(true, r1, r2, ctx);
 		emit_push_r64(r5, ctx);
@@ -2289,3 +2451,7 @@ out_free:
 	goto out_imms;
 }
 
+bool bpf_jit_supports_kfunc_call(void)
+{
+	return IS_ENABLED(CONFIG_AEABI);
+}
