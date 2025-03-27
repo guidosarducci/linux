@@ -106,6 +106,7 @@
 #define ARM_INST_MOVT		0x03400000
 
 #define ARM_INST_MUL		0x00000090
+#define ARM_INST_MLA		0x00200090
 
 #define ARM_INST_POP		0x08bd0000
 #define ARM_INST_PUSH		0x092d0000
@@ -234,6 +235,10 @@
 	(ARM_INST_MOVT | ((imm) >> 12) << 16 | (rd) << 12 | ((imm) & 0x0fff))
 
 #define ARM_MUL(rd, rm, rn)	(ARM_INST_MUL | (rd) << 16 | (rm) << 8 | (rn))
+#define ARM_MLA(rd, rn, rm, ra)	(ARM_INST_MLA | (rd) << 16 | (rn) | (rm) << 8 \
+				 | (ra) << 12)
+#define ARM_MLS(rd, rn, rm, ra)	(ARM_INST_MLS | (rd) << 16 | (rn) | (rm) << 8 \
+				 | (ra) << 12)
 
 #define ARM_POP(regs)		(ARM_INST_POP | (regs))
 #define ARM_PUSH(regs)		(ARM_INST_PUSH | (regs))
@@ -275,8 +280,6 @@
 #define ARM_UMULL(rd_lo, rd_hi, rn, rm)	(ARM_INST_UMULL | (rd_hi) << 16 \
 					 | (rd_lo) << 12 | (rm) << 8 | rn)
 
-#define ARM_MLS(rd, rn, rm, ra)	(ARM_INST_MLS | (rd) << 16 | (rn) | (rm) << 8 \
-				 | (ra) << 12)
 #define ARM_UXTH(rd, rm)	(ARM_INST_UXTH | (rd) << 12 | (rm))
 
 #endif /* PFILTER_OPCODES_ARM_H */
