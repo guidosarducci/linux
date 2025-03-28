@@ -1183,15 +1183,13 @@ static inline void emit_a32_mul_r64(const s8 dst[], const s8 src[],
 	rt = arm_bpf_get_reg64(src, tmp2, ctx);
 
 	/* Do Multiplication */
-	emit(ARM_MUL(ARM_IP, rd[1], rt[0]), ctx);
-	emit(ARM_MUL(ARM_LR, rd[0], rt[1]), ctx);
-	emit(ARM_ADD_R(ARM_LR, ARM_IP, ARM_LR), ctx);
+	emit(ARM_MUL(ARM_LR, rd[1], rt[0]), ctx);
+	emit(ARM_MLA(ARM_LR, rd[0], rt[1], ARM_LR), ctx);
 
-	emit(ARM_UMULL(ARM_IP, rd[0], rd[1], rt[1]), ctx);
+	emit(ARM_UMULL(rd[1], rd[0], rd[1], rt[1]), ctx);
 	emit(ARM_ADD_R(rd[0], ARM_LR, rd[0]), ctx);
 
-	arm_bpf_put_reg32(dst_lo, ARM_IP, tmp2[0], ctx);
-	arm_bpf_put_reg32(dst_hi, rd[0], tmp2[0], ctx);
+	arm_bpf_put_reg64(dst, rd, tmp2[0], ctx);
 }
 
 static bool is_ldst_imm(s16 off, const u8 size)
