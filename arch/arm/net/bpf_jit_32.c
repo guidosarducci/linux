@@ -1052,16 +1052,17 @@ static inline void emit_a32_arsh_r64(const s8 dst[], const s8 src[],
 	rd = arm_bpf_get_reg64(dst, tmp, ctx);
 
 	/* Do the ARSH operation */
-	emit(ARM_RSB_I(ARM_IP, rt, 32), ctx);
 	emit(ARM_SUBS_I(tmp2[0], rt, 32), ctx);
-	emit(ARM_MOV_SR(ARM_LR, rd[1], SRTYPE_LSR, rt), ctx);
-	emit(ARM_ORR_SR(ARM_LR, ARM_LR, rd[0], SRTYPE_ASL, ARM_IP), ctx);
+	_emit(ARM_COND_MI,
+	      ARM_RSB_I(tmp2[0], tmp2[0], 0), ctx);
+	emit(ARM_MOV_SR(rd[1], rd[1], SRTYPE_LSR, rt), ctx);
+	_emit(ARM_COND_MI,
+	      ARM_ORR_SR(rd[1], rd[1], rd[0], SRTYPE_ASL, tmp2[0]), ctx);
 	_emit(ARM_COND_PL,
-	      ARM_ORR_SR(ARM_LR, ARM_LR, rd[0], SRTYPE_ASR, tmp2[0]), ctx);
-	emit(ARM_MOV_SR(ARM_IP, rd[0], SRTYPE_ASR, rt), ctx);
+	      ARM_ORR_SR(rd[1], rd[1], rd[0], SRTYPE_ASR, tmp2[0]), ctx);
+	emit(ARM_MOV_SR(rd[0], rd[0], SRTYPE_ASR, rt), ctx);
 
-	arm_bpf_put_reg32(dst_lo, ARM_LR, tmp2[0], ctx);
-	arm_bpf_put_reg32(dst_hi, ARM_IP, tmp2[0], ctx);
+	arm_bpf_put_reg64(dst, rd, tmp2[0], ctx);
 }
 
 /* dst = dst >> src */
