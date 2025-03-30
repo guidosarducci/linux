@@ -2394,9 +2394,9 @@ static int build_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 			emit_rev32(rd[1], rd[1], ctx);
 			goto emit_bswap_uxt;
 		case 64:
-			emit_rev32(ARM_LR, rd[1], ctx);
+			emit_rev32(tmp2[0], rd[1], ctx);
 			emit_rev32(rd[1], rd[0], ctx);
-			emit(ARM_MOV_R(rd[0], ARM_LR), ctx);
+			emit(ARM_MOV_R(rd[0], tmp2[0]), ctx);
 			break;
 		}
 		goto exit;
