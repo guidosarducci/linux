@@ -114,6 +114,7 @@ enum {
 	BPF_JIT_STACK_REGS,
 };
 #define REG_STACK_SIZE	(BPF_JIT_STACK_REGS * 4)
+#define JIT_RSBP	(ARM_LR)		/* Register Stack Base Ptr*/
 
 #define TMP_REG_1	(MAX_BPF_JIT_REG + 0)	/* TEMP Register 1 */
 #define TMP_REG_2	(MAX_BPF_JIT_REG + 1)	/* TEMP Register 2 */
@@ -469,6 +470,12 @@ static inline void emit_mov_i(const u8 rd, u32 val, bool fixed, struct jit_ctx *
 	}
 }
 
+/* Load a pointer to the base of stacked BPF registers (RSBP). */
+static inline void emit_load_rsbp(u8 reg, struct jit_ctx *ctx)
+{
+	emit(ARM_LDR_I(reg, ARM_FP, ctx->bpf_rsbp_fp_off), ctx);
+}
+
 static void emit_bx_r(u8 tgt_reg, struct jit_ctx *ctx)
 {
 	if (elf_hwcap & HWCAP_THUMB)
@@ -485,6 +492,9 @@ static inline void emit_blx_r(u8 tgt_reg, struct jit_ctx *ctx)
 #else
 	emit(ARM_BLX_R(tgt_reg), ctx);
 #endif
+	/* Restore RSBP if clobbered. */
+	if (JIT_RSBP == ARM_LR)
+		emit_load_rsbp(JIT_RSBP, ctx);
 }
 
 static inline int epilogue_offset(const struct jit_ctx *ctx)
@@ -639,12 +649,6 @@ cont:
 	}
 }
 
-/* Load a pointer to the base of stacked BPF registers*/
-static inline void emit_ld_reg_stack_base(u8 reg, struct jit_ctx *ctx)
-{
-	emit(ARM_LDR_I(reg, ARM_FP, ctx->bpf_rsbp_fp_off), ctx);
-}
-
 /* Is the translated BPF register on stack? */
 static inline bool is_stacked(s8 reg)
 {
@@ -682,8 +686,7 @@ static inline void emit_strd_i(u8 src, u8 base, s8 off, struct jit_ctx *ctx)
 static s8 arm_bpf_get_reg32(s8 reg, s8 tmp, struct jit_ctx *ctx)
 {
 	if (is_stacked(reg)) {
-		emit_ld_reg_stack_base(tmp, ctx);
-		emit(ARM_LDR_I(tmp, tmp, reg), ctx);
+		emit(ARM_LDR_I(tmp, JIT_RSBP, reg), ctx);
 		reg = tmp;
 	}
 	return reg;
@@ -693,8 +696,7 @@ static const s8 *arm_bpf_get_reg64(const s8 *reg, const s8 *tmp,
 				   struct jit_ctx *ctx)
 {
 	if (is_stacked(reg[1])) {
-		emit_ld_reg_stack_base(tmp[0], ctx);
-		emit_ldrd_i(tmp[1], tmp[0], reg[1], ctx);
+		emit_ldrd_i(tmp[1], JIT_RSBP, reg[1], ctx);
 		reg = tmp;
 	}
 	return reg;
@@ -704,21 +706,19 @@ static const s8 *arm_bpf_get_reg64(const s8 *reg, const s8 *tmp,
  * back to the stack with help of a 32-bit temporary.  If the source
  * register is not the same, then move it into the correct register.
  */
-static void arm_bpf_put_reg32(s8 reg, s8 src, s8 tmp, struct jit_ctx *ctx)
+static void arm_bpf_put_reg32(s8 reg, s8 src, struct jit_ctx *ctx)
 {
-	if (is_stacked(reg)) {
-		emit_ld_reg_stack_base(tmp, ctx);
-		emit(ARM_STR_I(src, tmp, reg), ctx);
-	} else if (reg != src)
+	if (is_stacked(reg))
+		emit(ARM_STR_I(src, JIT_RSBP, reg), ctx);
+	else if (reg != src)
 		emit(ARM_MOV_R(reg, src), ctx);
 }
 
-static void arm_bpf_put_reg64(const s8 *reg, const s8 *src, s8 tmp,
+static void arm_bpf_put_reg64(const s8 *reg, const s8 *src,
 			      struct jit_ctx *ctx)
 {
 	if (is_stacked(reg[1])) {
-		emit_ld_reg_stack_base(tmp, ctx);
-		emit_strd_i(src[1], tmp, reg[1], ctx);
+		emit_strd_i(src[1], JIT_RSBP, reg[1], ctx);
 	} else {
 		if (reg[1] != src[1])
 			emit(ARM_MOV_R(reg[1], src[1]), ctx);
@@ -735,7 +735,7 @@ static inline void emit_a32_mov_i(const s8 dst, const u32 val, bool fixed,
 
 	if (is_stacked(dst)) {
 		emit_mov_i(tmp[1], val, fixed, ctx);
-		arm_bpf_put_reg32(dst, tmp[1], tmp[0], ctx);
+		arm_bpf_put_reg32(dst, tmp[1], ctx);
 	} else {
 		emit_mov_i(dst, val, fixed, ctx);
 	}
@@ -744,13 +744,12 @@ static inline void emit_a32_mov_i(const s8 dst, const u32 val, bool fixed,
 static void emit_a32_mov_i64(const s8 dst[], u64 val, bool fixed, struct jit_ctx *ctx)
 {
 	const s8 *tmp = bpf2a32[TMP_REG_1];
-	const s8 *tmp2 = bpf2a32[TMP_REG_2];
 	const s8 *rd = is_stacked(dst_lo) ? tmp : dst;
 
 	emit_mov_i(rd[1], (u32)val, fixed, ctx);
 	emit_mov_i(rd[0], val >> 32, fixed, ctx);
 
-	arm_bpf_put_reg64(dst, rd, tmp2[0], ctx);
+	arm_bpf_put_reg64(dst, rd, ctx);
 }
 
 /* Zero-extend register unless verifier does */
@@ -873,7 +872,7 @@ static inline void emit_a32_alu_r64(const bool is64, const s8 dst[],
 		emit_cond_zext(rd, ctx);
 	}
 
-	arm_bpf_put_reg64(dst, rd, tmp2[0], ctx); // FIXME ALU32 RSH sees 2 zext
+	arm_bpf_put_reg64(dst, rd, ctx); // FIXME ALU32 RSH sees 2 zext
 }
 
 /* dst = src (4 bytes)*/
@@ -882,7 +881,7 @@ static inline void emit_a32_mov_r(const s8 dst, const s8 src, struct jit_ctx *ct
 	s8 rt;
 
 	rt = arm_bpf_get_reg32(src, tmp[0], ctx);
-	arm_bpf_put_reg32(dst, rt, tmp[1], ctx);
+	arm_bpf_put_reg32(dst, rt, ctx);
 }
 
 /* dst = src */
@@ -901,15 +900,12 @@ static inline void emit_a32_mov_r64(const bool is64, const s8 dst[],
 	} else if (is_stacked(src_lo) && is_stacked(dst_lo)) {
 		const u8 *tmp = bpf2a32[TMP_REG_1];
 
-		emit_ld_reg_stack_base(ARM_LR, ctx);
-		emit_ldrd_i(tmp[1], ARM_LR, src_lo, ctx);
-		emit_strd_i(tmp[1], ARM_LR, dst_lo, ctx);
+		emit_ldrd_i(tmp[1], JIT_RSBP, src_lo, ctx);
+		emit_strd_i(tmp[1], JIT_RSBP, dst_lo, ctx);
 	} else if (is_stacked(src_lo)) {
-		emit_ld_reg_stack_base(ARM_LR, ctx);
-		emit_ldrd_i(dst[1], ARM_LR, src_lo, ctx);
+		emit_ldrd_i(dst[1], JIT_RSBP, src_lo, ctx);
 	} else if (is_stacked(dst_lo)) {
-		emit_ld_reg_stack_base(ARM_LR, ctx);
-		emit_strd_i(src[1], ARM_LR, dst_lo, ctx);
+		emit_strd_i(src[1], JIT_RSBP, dst_lo, ctx);
 	} else {
 		emit(ARM_MOV_R(dst[0], src[0]), ctx);
 		emit(ARM_MOV_R(dst[1], src[1]), ctx);
@@ -920,7 +916,6 @@ static inline void emit_a32_mov_r64(const bool is64, const s8 dst[],
 static inline void emit_a32_movsx_r64(const bool is64, const u8 off, const s8 dst[], const s8 src[],
 				      struct jit_ctx *ctx) {
 	const s8 *tmp = bpf2a32[TMP_REG_1];
-	const s8 *tmp2 = bpf2a32[TMP_REG_2];
 	s8 rs;
 	s8 rd;
 
@@ -954,7 +949,7 @@ static inline void emit_a32_movsx_r64(const bool is64, const u8 off, const s8 ds
 	 * This saves us one str instruction.
 	 */
 	if (dst_lo != src_lo || off != 32)
-		arm_bpf_put_reg32(dst_lo, rd, tmp2[0], ctx);
+		arm_bpf_put_reg32(dst_lo, rd, ctx);
 
 	if (!is64) {
 		/* Zero out high 4 bytes */
@@ -962,7 +957,7 @@ static inline void emit_a32_movsx_r64(const bool is64, const u8 off, const s8 ds
 	} else {
 		if (is_stacked(dst_hi)) {
 			emit(ARM_ASR_I(tmp[0], rd, 31), ctx);
-			arm_bpf_put_reg32(dst_hi, tmp[0], tmp2[0], ctx);
+			arm_bpf_put_reg32(dst_hi, tmp[0], ctx);
 		} else {
 			emit(ARM_ASR_I(dst_hi, rd, 31), ctx);
 		}
@@ -993,14 +988,13 @@ static inline void emit_a32_alu_i(const s8 dst, const u32 val,
 		break;
 	}
 
-	arm_bpf_put_reg32(dst, rd, tmp[1], ctx);
+	arm_bpf_put_reg32(dst, rd, ctx);
 }
 
 /* dst = ~dst (64 bit) */
 static inline void emit_a32_neg64(const s8 dst[],
 				struct jit_ctx *ctx){
 	const s8 *tmp = bpf2a32[TMP_REG_1];
-	const s8 *tmp2= bpf2a32[TMP_REG_2];
 	const s8 *rd;
 
 	/* Setup Operand */
@@ -1010,7 +1004,7 @@ static inline void emit_a32_neg64(const s8 dst[],
 	emit(ARM_RSBS_I(rd[1], rd[1], 0), ctx);
 	emit(ARM_RSC_I(rd[0], rd[0], 0), ctx);
 
-	arm_bpf_put_reg64(dst, rd, tmp2[0], ctx);
+	arm_bpf_put_reg64(dst, rd, ctx);
 }
 
 /* dst = dst << src */
@@ -1036,7 +1030,7 @@ static inline void emit_a32_lsh_r64(const s8 dst[], const s8 src[],
 	      ARM_ORR_SR(rd[0], rd[0], rd[1], SRTYPE_ASL, tmp2[0]), ctx);
 	emit(ARM_MOV_SR(rd[1], rd[1], SRTYPE_ASL, rt), ctx);
 
-	arm_bpf_put_reg64(dst, rd, tmp2[0], ctx);
+	arm_bpf_put_reg64(dst, rd, ctx);
 }
 
 /* dst = dst >> src (signed)*/
@@ -1062,7 +1056,7 @@ static inline void emit_a32_arsh_r64(const s8 dst[], const s8 src[],
 	      ARM_ORR_SR(rd[1], rd[1], rd[0], SRTYPE_ASR, tmp2[0]), ctx);
 	emit(ARM_MOV_SR(rd[0], rd[0], SRTYPE_ASR, rt), ctx);
 
-	arm_bpf_put_reg64(dst, rd, tmp2[0], ctx);
+	arm_bpf_put_reg64(dst, rd, ctx);
 }
 
 /* dst = dst >> src */
@@ -1088,7 +1082,7 @@ static inline void emit_a32_rsh_r64(const s8 dst[], const s8 src[],
 	      ARM_ORR_SR(rd[1], rd[1], rd[0], SRTYPE_LSR, tmp2[0]), ctx);
 	emit(ARM_MOV_SR(rd[0], rd[0], SRTYPE_LSR, rt), ctx);
 
-	arm_bpf_put_reg64(dst, rd, tmp2[0], ctx);
+	arm_bpf_put_reg64(dst, rd, ctx);
 }
 
 /* dst = dst << val */
@@ -1114,7 +1108,7 @@ static inline void emit_a32_lsh_i64(const s8 dst[],
 		emit(ARM_EOR_R(rd[1], rd[1], rd[1]), ctx);
 	}
 
-	arm_bpf_put_reg64(dst, rd, tmp2[0], ctx);
+	arm_bpf_put_reg64(dst, rd, ctx);
 }
 
 /* dst = dst >> val */
@@ -1144,7 +1138,7 @@ static inline void emit_a32_rsh_i64(const s8 dst[],
 		emit(ARM_MOV_I(rd[0], 0), ctx);
 	}
 
-	arm_bpf_put_reg64(dst, rd, tmp2[0], ctx);
+	arm_bpf_put_reg64(dst, rd, ctx);
 }
 
 /* dst = dst >> val (signed) */
@@ -1174,7 +1168,7 @@ static inline void emit_a32_arsh_i64(const s8 dst[],
 		emit(ARM_MOV_SI(rd[0], rd[0], SRTYPE_ASR, 31), ctx);
 	}
 
-	arm_bpf_put_reg64(dst, rd, tmp2[0], ctx);
+	arm_bpf_put_reg64(dst, rd, ctx);
 }
 
 static inline void emit_a32_mul_r64(const s8 dst[], const s8 src[],
@@ -1194,7 +1188,10 @@ static inline void emit_a32_mul_r64(const s8 dst[], const s8 src[],
 	emit(ARM_UMULL(rd[1], rd[0], rd[1], rt[1]), ctx);
 	emit(ARM_ADD_R(rd[0], ARM_LR, rd[0]), ctx);
 
-	arm_bpf_put_reg64(dst, rd, tmp2[0], ctx);
+	/* Restore RSBP if clobbered. */
+	if (JIT_RSBP == ARM_LR)
+		emit_load_rsbp(JIT_RSBP, ctx);
+	arm_bpf_put_reg64(dst, rd, ctx);
 }
 
 static bool is_ldst_imm(s16 off, const u8 size)
@@ -1274,7 +1271,6 @@ static inline void emit_str_r(const s8 dst, const s8 src[],
 static inline void emit_ldx_r(const s8 dst[], const s8 src,
 			      s16 off, struct jit_ctx *ctx, const u8 sz){
 	const s8 *tmp = bpf2a32[TMP_REG_1];
-	const s8 *tmp2 = bpf2a32[TMP_REG_2];
 	const s8 *rd = is_stacked(dst_lo) ? tmp : dst;
 	s8 rm = src;
 
@@ -1310,14 +1306,13 @@ static inline void emit_ldx_r(const s8 dst[], const s8 src,
 		emit(ARM_LDR_I(rd[0], rm, off + 4), ctx);
 		break;
 	}
-	arm_bpf_put_reg64(dst, rd, tmp2[0], ctx);
+	arm_bpf_put_reg64(dst, rd, ctx);
 }
 
 /* dst = *(signed size*)(src + off) */
 static inline void emit_ldsx_r(const s8 dst[], const s8 src,
 			       s16 off, struct jit_ctx *ctx, const u8 sz){
 	const s8 *tmp = bpf2a32[TMP_REG_1];
-	const s8 *tmp2 = bpf2a32[TMP_REG_2];
 	const s8 *rd = is_stacked(dst_lo) ? tmp : dst;
 	s8 rm = src;
 	int add_off;
@@ -1355,7 +1350,7 @@ static inline void emit_ldsx_r(const s8 dst[], const s8 src,
 	}
 	/* Carry the sign extension to upper 32 bits */
 	emit(ARM_ASR_I(rd[0], rd[1], 31), ctx);
-	arm_bpf_put_reg64(dst, rd, tmp2[0], ctx);
+	arm_bpf_put_reg64(dst, rd, ctx);
 }
 
 /* Arithmetic Operation */
@@ -1482,7 +1477,7 @@ static void emit_atomic_r(const s8 dst, const s8 src, s16 off, u8 op,
 
 	/* Update src register with old value, if specified */
 	if (op & BPF_FETCH)
-		arm_bpf_put_reg32(src, ARM_R0, tmp[0], ctx);
+		arm_bpf_put_reg32(src, ARM_R0, ctx);
 
 	/* Restore caller-saved registers (except any fetched value) */
 	emit(ARM_POP(CALLER_MASK & ~exclude_mask), ctx);
@@ -1523,10 +1518,10 @@ static void emit_atomic_r64(const s8 dst, const s8 src[], s16 off, u8 op,
 	emit_mov_i(tmp[0], off, false, ctx);
 	emit(ARM_ADD_R(tmp[1], rd, tmp[0]), ctx);
 	if (op == BPF_XCHG) {
-		arm_bpf_put_reg64(r1, rs, tmp[0], ctx);
+		arm_bpf_put_reg64(r1, rs, ctx);
 		emit(ARM_MOV_R(r0[1], tmp[1]), ctx);
 	} else {
-		arm_bpf_put_reg64(r0, rs, tmp[0], ctx);
+		arm_bpf_put_reg64(r0, rs, ctx);
 		emit(ARM_MOV_R(r1[1], tmp[1]), ctx);
 	}
 
@@ -1571,7 +1566,7 @@ static void emit_atomic_r64(const s8 dst, const s8 src[], s16 off, u8 op,
 
 	/* Update src register with old value, if specified */
 	if (op & BPF_FETCH)
-		arm_bpf_put_reg64(src, r0, tmp[0], ctx);
+		arm_bpf_put_reg64(src, r0, ctx);
 
 	/* Restore caller-saved registers (except any fetched value) */
 	emit(ARM_POP(CALLER_MASK & ~exclude_mask), ctx);
@@ -1702,7 +1697,7 @@ static int emit_bpf_tail_call(struct jit_ctx *ctx)
 	emit(ARM_CMP_I(tc, tc_max), ctx);
 	_emit(ARM_COND_CS, ARM_B(jmp_offset), ctx);
 	emit(ARM_ADD_I(tc, tc, 1), ctx);
-	arm_bpf_put_reg32(tcc[1], tc, tmp[0], ctx);
+	arm_bpf_put_reg32(tcc[1], tc, ctx);
 
 	/* prog = array->ptrs[index]
 	 * if (prog == NULL)
@@ -1831,15 +1826,15 @@ static void build_prologue(struct jit_ctx *ctx)
 
 	/* Initialize pointer to register stack base (RSBP). In main prog
 	 * this is a self-pointer located above register stack. Subprogs
-	 * omit the register stack and instead copy pointer from the
-	 * previous stack frame.
+	 * omit the register stack and instead copy pointer from the prior
+	 * stack frame. Note: ARM_LR is used as RSBP during prog execution.
 	 */
 	if (is_main_prog)
-		emit(ARM_MOV_R(ARM_LR, ARM_SP), ctx);
+		emit(ARM_MOV_R(JIT_RSBP, ARM_SP), ctx);
 	else
-		emit(ARM_LDR_I(ARM_LR, ARM_LR, ctx->bpf_rsbp_fp_off), ctx);
+		emit(ARM_LDR_I(JIT_RSBP, ARM_LR, ctx->bpf_rsbp_fp_off), ctx);
 
-	emit(ARM_STR_I(ARM_LR, ARM_SP, 0), ctx);
+	emit(ARM_STR_I(JIT_RSBP, ARM_SP, 0), ctx);
 
 	/* Allocate space for register stack only in main program. */
 	if (is_main_prog)
@@ -1856,7 +1851,7 @@ static void build_prologue(struct jit_ctx *ctx)
 
 			if (!is_stacked(arm[1]))
 				continue;
-			emit_ldrd_i(tmp[1], ARM_LR, arm[1], ctx);
+			emit_ldrd_i(tmp[1], JIT_RSBP, arm[1], ctx);
 			emit(ARM_PUSH(BIT(tmp[1]) | BIT(tmp[0])), ctx);
 		}
 	}
@@ -1864,12 +1859,12 @@ static void build_prologue(struct jit_ctx *ctx)
 	/* Initialize BPF_FP base register */
 	emit(ARM_MOV_R(tmp[1], ARM_SP), ctx);
 	emit(ARM_MOV_I(tmp[0], 0), ctx);
-	emit_strd_i(tmp[1], ARM_LR, bpf_fp[1], ctx);
+	emit_strd_i(tmp[1], JIT_RSBP, bpf_fp[1], ctx);
 
 	if (is_main_prog) {
-		/* Initialize Tail Count */
+		/* Zero Tail Call Count */
 		emit(ARM_MOV_I(tmp[1], 0), ctx);
-		emit_strd_i(tmp[1], ARM_LR, tcc[1], ctx);
+		emit_strd_i(tmp[1], JIT_RSBP, tcc[1], ctx);
 
 		/* Move BPF_CTX to BPF_R1 */
 		emit(ARM_MOV_I(bpf_r1[0], 0), ctx);
@@ -1908,8 +1903,7 @@ static void build_epilogue(struct jit_ctx *ctx)
 	 * any non-stacked BPF registers are already ARM callee-saved.
 	 */
 	emit(ARM_SUB_I(tmp[1], ARM_FP, rsbp_sub), ctx);
-	emit(ARM_LDR_I(ARM_LR, tmp[1], 0), ctx);
-	emit(ARM_CMP_R(tmp[1], ARM_LR), ctx);
+	emit(ARM_CMP_R(tmp[1], JIT_RSBP), ctx);
 	_emit(ARM_COND_EQ, ARM_B(ctx->epilogue_main_skip), ctx);
 	idx_base = ctx->idx;
 
@@ -1926,7 +1920,7 @@ static void build_epilogue(struct jit_ctx *ctx)
 		if (!is_stacked(arm[1]))
 			continue;
 		emit(ARM_POP(BIT(tmp[1]) | BIT(tmp[0])), ctx);
-		emit_strd_i(tmp[1], ARM_LR, arm[1], ctx);
+		emit_strd_i(tmp[1], JIT_RSBP, arm[1], ctx);
 	}
 
 	/* Calculate offset in first pass and save */
@@ -2287,7 +2281,7 @@ static int build_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 			break;
 		}
 		emit_udivmod(rd_lo, rd_lo, rt, ctx, BPF_OP(code), off);
-		arm_bpf_put_reg32(dst_lo, rd_lo, ARM_LR, ctx);
+		arm_bpf_put_reg32(dst_lo, rd_lo, ctx);
 		emit_cond_zext(dst, ctx);
 		break;
 	case BPF_ALU64 | BPF_DIV | BPF_K:
@@ -2305,7 +2299,7 @@ static int build_insn(const struct bpf_insn *insn, struct jit_ctx *ctx,
 			break;
 		}
 		emit_udivmod64(rd, rd, rs, ctx, BPF_OP(code), off);
-		arm_bpf_put_reg64(dst, rd, ARM_LR, ctx);
+		arm_bpf_put_reg64(dst, rd, ctx);
 		break;
 	/* dst = dst << imm */
 	/* dst = dst >> imm */
@@ -2421,7 +2415,7 @@ emit_bswap_uxt:
 			break;
 		}
 exit:
-		arm_bpf_put_reg64(dst, rd, tmp2[0], ctx);
+		arm_bpf_put_reg64(dst, rd, ctx);
 		break;
 	/* dst = imm64 */
 	case BPF_LD | BPF_IMM | BPF_DW:
