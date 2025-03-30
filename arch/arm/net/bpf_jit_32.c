@@ -1362,14 +1362,16 @@ static inline void emit_ldsx_r(const s8 dst[], const s8 src,
 static inline void emit_ar_r(const u8 rd, const u8 rt, const u8 rm,
 			     const u8 rn, struct jit_ctx *ctx, u8 op,
 			     bool is_jmp64) {
+	const s8 *tmp = bpf2a32[TMP_REG_1];
+
 	switch (op) {
 	case BPF_JSET:
 		if (is_jmp64) {
-			emit(ARM_AND_R(ARM_IP, rt, rn), ctx);
-			emit(ARM_AND_R(ARM_LR, rd, rm), ctx);
-			emit(ARM_ORRS_R(ARM_IP, ARM_LR, ARM_IP), ctx);
+			emit(ARM_AND_R(tmp[1], rt, rn), ctx);
+			emit(ARM_AND_R(tmp[0], rd, rm), ctx);
+			emit(ARM_ORRS_R(tmp[0], tmp[1], tmp[0]), ctx);
 		} else {
-			emit(ARM_ANDS_R(ARM_IP, rt, rn), ctx);
+			emit(ARM_ANDS_R(tmp[1], rt, rn), ctx);
 		}
 		break;
 	case BPF_JEQ:
@@ -1390,13 +1392,13 @@ static inline void emit_ar_r(const u8 rd, const u8 rt, const u8 rm,
 	case BPF_JSGT:
 		emit(ARM_CMP_R(rn, rt), ctx);
 		if (is_jmp64)
-			emit(ARM_SBCS_R(ARM_IP, rm, rd), ctx);
+			emit(ARM_SBCS_R(tmp[0], rm, rd), ctx);
 		break;
 	case BPF_JSLT:
 	case BPF_JSGE:
 		emit(ARM_CMP_R(rt, rn), ctx);
 		if (is_jmp64)
-			emit(ARM_SBCS_R(ARM_IP, rd, rm), ctx);
+			emit(ARM_SBCS_R(tmp[0], rd, rm), ctx);
 		break;
 	}
 }
