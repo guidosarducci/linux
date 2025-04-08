@@ -2726,10 +2726,10 @@ go_jmp:
 		emit(ARM_B(jmp_offset), ctx);
 		break;
 notyet:
-		pr_info_once("*** NOT YET: opcode 0x%02x ***\n", code);
+		pr_info("*** NOT YET: opcode 0x%02x ***\n", code);
 		return -EFAULT;
 	default:
-		pr_err_once("unknown opcode 0x%02x\n", code);
+		pr_err("unknown opcode 0x%02x\n", code);
 		return -EINVAL;
 	}
 
