@@ -53,19 +53,19 @@
  * With frame pointers (to be compliant with the ABI):
  *
  *                              high
- * original ARM_SP =>     +--------------+ \
- *                        |      pc      | |
- * current ARM_FP =>      +--------------+ } callee saved registers
- *                        |r4-r9,fp,ip,lr| |
- *                        +--------------+ /
+ * original ARM_SP =>    +---------------+ \
+ *                       |       pc      | |
+ * current ARM_FP =>     +---------------+ } callee saved registers
+ *                       |r4-r10,fp,ip,lr| |
+ *                       +---------------+ /
  *                              low
  *
  * Without frame pointers:
  *
  *                              high
- * original ARM_SP =>     +--------------+
- *                        |  r4-r9,fp,lr | callee saved registers
- * current ARM_FP =>      +--------------+
+ * original ARM_SP =>    +---------------+
+ *                       |  r4-r10,fp,lr | callee saved registers
+ * current ARM_FP =>     +---------------+
  *                              low
  *
  * When popping registers off the stack at the end of a BPF function, we
@@ -79,7 +79,7 @@
  */
 #define CALLEE_MASK	(1 << ARM_R4 | 1 << ARM_R5 | 1 << ARM_R6 | \
 			 1 << ARM_R7 | 1 << ARM_R8 | 1 << ARM_R9 | \
-			 1 << ARM_FP)
+			 1 << ARM_R10| 1 << ARM_FP)
 #define CALLEE_PUSH_MASK (CALLEE_MASK | 1 << ARM_LR)
 #define CALLEE_POP_MASK  (CALLEE_MASK | 1 << ARM_PC)
 
@@ -114,7 +114,7 @@ enum {
 	BPF_JIT_STACK_REGS,
 };
 #define REG_STACK_SIZE	(BPF_JIT_STACK_REGS * 4)
-#define JIT_RSBP	(ARM_LR)		/* Register Stack Base Ptr*/
+#define JIT_RSBP	(ARM_R10)		/* Register Stack Base Ptr*/
 
 #define TMP_REG_1	(MAX_BPF_JIT_REG + 0)	/* TEMP Register 1 */
 #define TMP_REG_2	(MAX_BPF_JIT_REG + 1)	/* TEMP Register 2 */
@@ -198,7 +198,6 @@ struct jit_ctx {
 	u32 *offsets;
 	u32 *target;
 	u32 stack_size;
-	s32 bpf_rsbp_fp_off;	/* fp offset to BPF register stack base */
 	s32 prologue_tcc_skip;	/* offset: skip BPF FP, TCC, R1 setup */
 	s32 epilogue_main_skip;	/* offset: skip restoring BPF callee-saved */
 #if __LINUX_ARM_ARCH__ < 7
@@ -470,12 +469,6 @@ static inline void emit_mov_i(const u8 rd, u32 val, bool fixed, struct jit_ctx *
 	}
 }
 
-/* Load a pointer to the base of stacked BPF registers (RSBP). */
-static inline void emit_load_rsbp(u8 reg, struct jit_ctx *ctx)
-{
-	emit(ARM_LDR_I(reg, ARM_FP, ctx->bpf_rsbp_fp_off), ctx);
-}
-
 static void emit_bx_r(u8 tgt_reg, struct jit_ctx *ctx)
 {
 	if (elf_hwcap & HWCAP_THUMB)
@@ -492,9 +485,6 @@ static inline void emit_blx_r(u8 tgt_reg, struct jit_ctx *ctx)
 #else
 	emit(ARM_BLX_R(tgt_reg), ctx);
 #endif
-	/* Restore RSBP if clobbered. */
-	if (JIT_RSBP == ARM_LR)
-		emit_load_rsbp(JIT_RSBP, ctx);
 }
 
 static inline int epilogue_offset(const struct jit_ctx *ctx)
@@ -1188,9 +1178,6 @@ static inline void emit_a32_mul_r64(const s8 dst[], const s8 src[],
 	emit(ARM_UMULL(rd[1], rd[0], rd[1], rt[1]), ctx);
 	emit(ARM_ADD_R(rd[0], ARM_LR, rd[0]), ctx);
 
-	/* Restore RSBP if clobbered. */
-	if (JIT_RSBP == ARM_LR)
-		emit_load_rsbp(JIT_RSBP, ctx);
 	arm_bpf_put_reg64(dst, rd, ctx);
 }
 
@@ -1786,7 +1773,7 @@ static void build_prologue(struct jit_ctx *ctx)
 	const s8 *tcc = bpf2a32[TCALL_CNT];
 	const s8 *tmp = bpf2a32[TMP_REG_1];
 	u16 reg_set = CALLEE_PUSH_MASK;
-	int idx_base, fp_sp_off = 0;
+	int idx_base;
 	u8 reg;
 
 	/* Default main program does full register/stack initialization,
@@ -1798,54 +1785,34 @@ static void build_prologue(struct jit_ctx *ctx)
 	}
 	idx_base = ctx->idx;
 
-	/* Push ARM callee saved registers, cache previous ARM_FP in ARM_LR. */
+	/* Push ARM callee saved registers. */
 	if (IS_ENABLED(CONFIG_FRAME_POINTER)) {
 		reg_set |= BIT(ARM_IP) | BIT(ARM_PC);
 		emit(ARM_MOV_R(ARM_IP, ARM_SP), ctx);
 		emit(ARM_PUSH(reg_set), ctx);
-		emit(ARM_MOV_R(ARM_LR, ARM_FP), ctx);
 		/* ARM_PC above not restored in epilogue */
 		emit(ARM_SUB_I(ARM_FP, ARM_IP, 4), ctx);
-		/* ARM_FP offset to top of saved regs */
-		fp_sp_off = -4 * (hweight16(reg_set) - 1);
 	} else {
 		emit(ARM_PUSH(reg_set), ctx);
-		emit(ARM_MOV_R(ARM_LR, ARM_FP), ctx);
-		/* ARM_FP offset defaults to zero */
 		emit(ARM_MOV_R(ARM_FP, ARM_SP), ctx);
 	}
 
 	/* Ensure register stack is double-word aligned. */
-	if (hweight16(reg_set) % 2 == 0) {
-		emit(ARM_SUB_I(ARM_SP, ARM_SP, 8), ctx);
-		ctx->bpf_rsbp_fp_off = fp_sp_off - 8;
-	} else {
+	if (hweight16(reg_set) % 2 == 1)
 		emit(ARM_SUB_I(ARM_SP, ARM_SP, 4), ctx);
-		ctx->bpf_rsbp_fp_off = fp_sp_off - 4;
-	}
 
-	/* Initialize pointer to register stack base (RSBP). In main prog
-	 * this is a self-pointer located above register stack. Subprogs
-	 * omit the register stack and instead copy pointer from the prior
-	 * stack frame. Note: ARM_LR is used as RSBP during prog execution.
-	 */
-	if (is_main_prog)
+	if (is_main_prog) {
+		/* Load BPF register stack base pointer (RSBP) and allocate
+		 * required space in main program stack frame.
+		 */
 		emit(ARM_MOV_R(JIT_RSBP, ARM_SP), ctx);
-	else
-		emit(ARM_LDR_I(JIT_RSBP, ARM_LR, ctx->bpf_rsbp_fp_off), ctx);
-
-	emit(ARM_STR_I(JIT_RSBP, ARM_SP, 0), ctx);
-
-	/* Allocate space for register stack only in main program. */
-	if (is_main_prog)
 		emit(ARM_SUB_I(ARM_SP, ARM_SP, REG_STACK_SIZE), ctx);
-
-	/* Push BPF callee-saved registers if stacked and this program
-	 * is a subprog call. Save all of them (for now) to simplify
-	 * handling stack deallocation and register restoring e.g. in
-	 * the case of tailcalls.
-	 */
-	if (!is_main_prog) {
+	} else {
+		/* Push BPF callee-saved registers if stacked and this program
+		 * is a subprog call. Save all of them (for now) to simplify
+		 * handling stack deallocation and register restoring e.g. in
+		 * the case of tailcalls.
+		 */
 		for (reg = BPF_REG_FP; reg >= BPF_REG_6; reg--) {
 			const s8 *arm = bpf2a32[reg];
 
@@ -1892,19 +1859,15 @@ static void build_prologue(struct jit_ctx *ctx)
 static void build_epilogue(struct jit_ctx *ctx)
 {
 	const s8 *tmp = bpf2a32[TMP_REG_1];
-	int idx_base, rsbp_sub;
+	int idx_base;
 	u8 reg;
 
-	/* Offset to register stack (RSBP), must be unsigned for SUB */
-	rsbp_sub = imm8m(-ctx->bpf_rsbp_fp_off);
-
-	/* Check if RSBP is a self-pointer (i.e. main prog stack frame)
+	/* Check if ARM_FP >= RSBP (i.e. inside main prog stack frame)
 	 * and skip restoring stacked BPF callee-saved registers, noting
 	 * any non-stacked BPF registers are already ARM callee-saved.
 	 */
-	emit(ARM_SUB_I(tmp[1], ARM_FP, rsbp_sub), ctx);
-	emit(ARM_CMP_R(tmp[1], JIT_RSBP), ctx);
-	_emit(ARM_COND_EQ, ARM_B(ctx->epilogue_main_skip), ctx);
+	emit(ARM_CMP_R(ARM_FP, JIT_RSBP), ctx);
+	_emit(ARM_COND_HS, ARM_B(ctx->epilogue_main_skip), ctx);
 	idx_base = ctx->idx;
 
 	/* Deallocate BPF prog stack, leave SP -> top of register stack */
