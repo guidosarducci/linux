@@ -510,8 +510,8 @@ static inline void emit_udivmod(u8 rd, u8 rm, u8 rn, struct jit_ctx *ctx, u8 op,
 		if (op == BPF_DIV) {
 			emit(sign ? ARM_SDIV(rd, rm, rn) : ARM_UDIV(rd, rm, rn), ctx);
 		} else {
-			emit(sign ? ARM_SDIV(ARM_IP, rm, rn) : ARM_UDIV(ARM_IP, rm, rn), ctx);
-			emit(ARM_MLS(rd, rn, ARM_IP, rm), ctx);
+			emit(sign ? ARM_SDIV(tmp[1], rm, rn) : ARM_UDIV(tmp[1], rm, rn), ctx);
+			emit(ARM_MLS(rd, rn, tmp[1], rm), ctx);
 		}
 		return;
 	}
@@ -550,8 +550,9 @@ static inline void emit_udivmod(u8 rd, u8 rm, u8 rn, struct jit_ctx *ctx, u8 op,
 			dst = (u32)jit_mod32;
 	}
 
-	emit_mov_i(ARM_IP, dst, false, ctx);
-	emit_blx_r(ARM_IP, ctx);
+	/* Note: ARM_R2 now free after push to stack in CALLER_MASK */
+	emit_mov_i(ARM_R2, dst, false, ctx);
+	emit_blx_r(ARM_R2, ctx);
 
 	/* Restore caller-saved registers from stack */
 	emit(ARM_POP(CALLER_MASK & ~exclude_mask), ctx);
