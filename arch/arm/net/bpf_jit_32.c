@@ -645,27 +645,33 @@ static inline bool is_stacked(s8 reg)
 	return reg < 0;
 }
 
-/* Emit LDRD_I or equivalent on older architectures. */
-static inline void emit_ldrd_i(u8 tgt, u8 base, s8 off, struct jit_ctx *ctx)
+/* Emit LDRD_I equivalent on older architectures or with non-adjacent regs. */
+static inline void emit_ldrd_i(const s8 *tgt, const u8 base, const s8 *off,
+			       struct jit_ctx *ctx)
 {
-	if (__LINUX_ARM_ARCH__ >= 6 ||
-	    ctx->cpu_architecture >= CPU_ARCH_ARMv5TE) {
-		emit(ARM_LDRD_I(tgt, base, off), ctx);
+	int cpu_arch = ctx->cpu_architecture;
+
+	if ((__LINUX_ARM_ARCH__ < 6 && cpu_arch < CPU_ARCH_ARMv5TE) ||
+	    tgt[1] + 1 != tgt[0]) {
+		emit(ARM_LDR_I(tgt[1], base, off[1]), ctx);
+		emit(ARM_LDR_I(tgt[0], base, off[0]), ctx);
 	} else {
-		emit(ARM_LDR_I(tgt, base, off), ctx);
-		emit(ARM_LDR_I(tgt + 1, base, off + 4), ctx);
+		emit(ARM_LDRD_I(tgt[1], base, off[1]), ctx);
 	}
 }
 
-/* Emit STRD_I or equivalent on older architectures. */
-static inline void emit_strd_i(u8 src, u8 base, s8 off, struct jit_ctx *ctx)
+/* Emit STRD_I equivalent on older architectures or with non-adjacent regs. */
+static inline void emit_strd_i(const s8 *src, const u8 base, const s8 *off,
+			       struct jit_ctx *ctx)
 {
-	if (__LINUX_ARM_ARCH__ >= 6 ||
-	    ctx->cpu_architecture >= CPU_ARCH_ARMv5TE) {
-		emit(ARM_STRD_I(src, base, off), ctx);
+	int cpu_arch = ctx->cpu_architecture;
+
+	if ((__LINUX_ARM_ARCH__ < 6 && cpu_arch < CPU_ARCH_ARMv5TE) ||
+	    src[1] + 1 != src[0]) {
+		emit(ARM_STR_I(src[1], base, off[1]), ctx);
+		emit(ARM_STR_I(src[0], base, off[0]), ctx);
 	} else {
-		emit(ARM_STR_I(src, base, off), ctx);
-		emit(ARM_STR_I(src + 1, base, off + 4), ctx);
+		emit(ARM_STRD_I(src[1], base, off[1]), ctx);
 	}
 }
 
@@ -686,7 +692,7 @@ static const s8 *arm_bpf_get_reg64(const s8 *reg, const s8 *tmp,
 				   struct jit_ctx *ctx)
 {
 	if (is_stacked(reg[1])) {
-		emit_ldrd_i(tmp[1], JIT_RSBP, reg[1], ctx);
+		emit_ldrd_i(tmp, JIT_RSBP, reg, ctx);
 		reg = tmp;
 	}
 	return reg;
@@ -708,7 +714,7 @@ static void arm_bpf_put_reg64(const s8 *reg, const s8 *src,
 			      struct jit_ctx *ctx)
 {
 	if (is_stacked(reg[1])) {
-		emit_strd_i(src[1], JIT_RSBP, reg[1], ctx);
+		emit_strd_i(src, JIT_RSBP, reg, ctx);
 	} else {
 		if (reg[1] != src[1])
 			emit(ARM_MOV_R(reg[1], src[1]), ctx);
@@ -890,12 +896,12 @@ static inline void emit_a32_mov_r64(const bool is64, const s8 dst[],
 	} else if (is_stacked(src_lo) && is_stacked(dst_lo)) {
 		const u8 *tmp = bpf2a32[TMP_REG_1];
 
-		emit_ldrd_i(tmp[1], JIT_RSBP, src_lo, ctx);
-		emit_strd_i(tmp[1], JIT_RSBP, dst_lo, ctx);
+		emit_ldrd_i(tmp, JIT_RSBP, src, ctx);
+		emit_strd_i(tmp, JIT_RSBP, dst, ctx);
 	} else if (is_stacked(src_lo)) {
-		emit_ldrd_i(dst[1], JIT_RSBP, src_lo, ctx);
+		emit_ldrd_i(dst, JIT_RSBP, src, ctx);
 	} else if (is_stacked(dst_lo)) {
-		emit_strd_i(src[1], JIT_RSBP, dst_lo, ctx);
+		emit_strd_i(src, JIT_RSBP, dst, ctx);
 	} else {
 		emit(ARM_MOV_R(dst[0], src[0]), ctx);
 		emit(ARM_MOV_R(dst[1], src[1]), ctx);
@@ -1834,7 +1840,7 @@ static void build_prologue(struct jit_ctx *ctx)
 
 			if (!is_stacked(arm[1]))
 				continue;
-			emit_ldrd_i(tmp[1], JIT_RSBP, arm[1], ctx);
+			emit_ldrd_i(tmp, JIT_RSBP, arm, ctx);
 			emit(ARM_PUSH(BIT(tmp[1]) | BIT(tmp[0])), ctx);
 		}
 	}
@@ -1842,12 +1848,12 @@ static void build_prologue(struct jit_ctx *ctx)
 	/* Initialize BPF_FP base register */
 	emit(ARM_MOV_R(tmp[1], ARM_SP), ctx);
 	emit(ARM_MOV_I(tmp[0], 0), ctx);
-	emit_strd_i(tmp[1], JIT_RSBP, bpf_fp[1], ctx);
+	emit_strd_i(tmp, JIT_RSBP, bpf_fp, ctx);
 
 	if (is_main_prog) {
 		/* Zero Tail Call Count */
 		emit(ARM_MOV_I(tmp[1], 0), ctx);
-		emit_strd_i(tmp[1], JIT_RSBP, tcc[1], ctx);
+		emit_strd_i(tmp, JIT_RSBP, tcc, ctx);
 
 		/* Move BPF_CTX to BPF_R1 */
 		emit(ARM_MOV_I(bpf_r1[0], 0), ctx);
@@ -1899,7 +1905,7 @@ static void build_epilogue(struct jit_ctx *ctx)
 		if (!is_stacked(arm[1]))
 			continue;
 		emit(ARM_POP(BIT(tmp[1]) | BIT(tmp[0])), ctx);
-		emit_strd_i(tmp[1], JIT_RSBP, arm[1], ctx);
+		emit_strd_i(tmp, JIT_RSBP, arm, ctx);
 	}
 
 	/* Calculate offset in first pass and save */
@@ -2043,7 +2049,8 @@ static int emit_kfunc_args(const struct bpf_insn *insn, int *ret_size, struct ji
 		if (fm->arg_size[i] > sizeof(u32)) {
 			rd = arm_bpf_get_reg64(bpf2a32[BPF_REG_1 + i], tmp, ctx);
 			stack_off = JIT_ALIGN(stack_off);
-			emit_strd_i(rd[1], ARM_SP, stack_off, ctx);
+			emit(ARM_STR_I(rd[1], ARM_SP, stack_off), ctx);
+			emit(ARM_STR_I(rd[0], ARM_SP, stack_off + 4), ctx);
 			stack_off += 8;
 		} else {
 			rt = arm_bpf_get_reg32(bpf2a32[BPF_REG_1 + i][1], tmp[1], ctx);
