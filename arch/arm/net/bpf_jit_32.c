@@ -1166,17 +1166,33 @@ static inline void emit_a32_mul_r64(const s8 dst[], const s8 src[],
 	const s8 *tmp = bpf2a32[TMP_REG_1];
 	const s8 *tmp2 = bpf2a32[TMP_REG_2];
 	const s8 *rd, *rt;
+	u8 tmp3 = JIT_RSBP;
 
 	/* Setup operands for multiplication */
 	rd = arm_bpf_get_reg64(dst, tmp, ctx);
 	rt = arm_bpf_get_reg64(src, tmp2, ctx);
 
+	/* Registers are scarce, so find another free one at runtime to
+	 * avoid hardcoding one here and limiting its use elsewhere.
+	 * Use JIT_RSBP finally only if both BPF operands are stacked.
+	 */
+	if (rd != tmp)
+		tmp3 = tmp[1];
+	else if (rt != tmp2)
+		tmp3 = tmp2[1];
+	else
+		emit(ARM_PUSH(BIT(tmp3)), ctx);
+
 	/* Do Multiplication */
-	emit(ARM_MUL(ARM_LR, rd[1], rt[0]), ctx);
-	emit(ARM_MLA(ARM_LR, rd[0], rt[1], ARM_LR), ctx);
+	emit(ARM_MUL(tmp3, rd[1], rt[0]), ctx);
+	emit(ARM_MLA(tmp3, rd[0], rt[1], tmp3), ctx);
 
 	emit(ARM_UMULL(rd[1], rd[0], rd[1], rt[1]), ctx);
-	emit(ARM_ADD_R(rd[0], ARM_LR, rd[0]), ctx);
+	emit(ARM_ADD_R(rd[0], tmp3, rd[0]), ctx);
+
+	/* Restore JIT_RSBP */
+	if (tmp3 == JIT_RSBP)
+		emit(ARM_POP(BIT(tmp3)), ctx);
 
 	arm_bpf_put_reg64(dst, rd, ctx);
 }
