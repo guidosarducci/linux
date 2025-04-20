@@ -2454,6 +2454,11 @@ struct arm32_jit_data {
 	struct jit_ctx ctx;
 };
 
+#define DEBUG_PASS(pass) \
+if (bpf_jit_enable > 1) \
+	pr_notice("JIT PASS %d: prog=%p is_func=%x extra_pass=%x ctx.idx=%d\n",\
+		  pass, prog, prog->is_func, extra_pass, ctx.idx)
+
 struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 {
 	struct bpf_prog *tmp, *orig_prog = prog;
@@ -2575,6 +2580,7 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 		prog = orig_prog;
 		goto out_imms;
 	}
+	DEBUG_PASS(1);
 
 	/* 2.) Second pass to generate final JIT code, or an extra
 	 * pass to finalize JMP offsets if using bpf2bpf calls.
@@ -2592,6 +2598,8 @@ skip_init_ctx:
 		goto out_free;
 
 	build_epilogue(&ctx);
+
+	DEBUG_PASS(2);
 
 	/* 3.) Extra pass to validate JITed Code */
 	if (validate_code(&ctx))
@@ -2621,6 +2629,8 @@ skip_init_ctx:
 	prog->bpf_func = (void *)ctx.target;
 	prog->jited = 1;
 	prog->jited_len = image_size;
+
+	DEBUG_PASS(3);
 
 out_imms:
 #if __LINUX_ARM_ARCH__ < 7
