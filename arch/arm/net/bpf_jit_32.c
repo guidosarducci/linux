@@ -663,6 +663,30 @@ static bool is_stacked(s8 reg)
 	return reg < 0;
 }
 
+/* Emit LDRD_I or equivalent on older architectures. */
+static inline void emit_ldrd_i(u8 tgt, u8 base, s8 off, struct jit_ctx *ctx)
+{
+	if (__LINUX_ARM_ARCH__ >= 6 ||
+	    ctx->cpu_architecture >= CPU_ARCH_ARMv5TE) {
+		emit(ARM_LDRD_I(tgt, base, off), ctx);
+	} else {
+		emit(ARM_LDR_I(tgt, base, off), ctx);
+		emit(ARM_LDR_I(tgt + 1, base, off + 4), ctx);
+	}
+}
+
+/* Emit STRD_I or equivalent on older architectures. */
+static inline void emit_strd_i(u8 src, u8 base, s8 off, struct jit_ctx *ctx)
+{
+	if (__LINUX_ARM_ARCH__ >= 6 ||
+	    ctx->cpu_architecture >= CPU_ARCH_ARMv5TE) {
+		emit(ARM_STRD_I(src, base, off), ctx);
+	} else {
+		emit(ARM_STR_I(src, base, off), ctx);
+		emit(ARM_STR_I(src + 1, base, off + 4), ctx);
+	}
+}
+
 /* If a BPF register is on the stack (stk is true), load it to the
  * supplied temporary register and return the temporary register
  * for subsequent operations, otherwise just use the CPU register.
@@ -680,16 +704,7 @@ static const s8 *arm_bpf_get_reg64(const s8 *reg, const s8 *tmp,
 				   struct jit_ctx *ctx)
 {
 	if (is_stacked(reg[1])) {
-		if (__LINUX_ARM_ARCH__ >= 6 ||
-		    ctx->cpu_architecture >= CPU_ARCH_ARMv5TE) {
-			emit(ARM_LDRD_I(tmp[1], ARM_FP,
-					EBPF_SCRATCH_TO_ARM_FP(reg[1])), ctx);
-		} else {
-			emit(ARM_LDR_I(tmp[1], ARM_FP,
-				       EBPF_SCRATCH_TO_ARM_FP(reg[1])), ctx);
-			emit(ARM_LDR_I(tmp[0], ARM_FP,
-				       EBPF_SCRATCH_TO_ARM_FP(reg[0])), ctx);
-		}
+		emit_ldrd_i(tmp[1], ARM_FP, EBPF_SCRATCH_TO_ARM_FP(reg[1]), ctx);
 		reg = tmp;
 	}
 	return reg;
@@ -711,16 +726,7 @@ static void arm_bpf_put_reg64(const s8 *reg, const s8 *src,
 			      struct jit_ctx *ctx)
 {
 	if (is_stacked(reg[1])) {
-		if (__LINUX_ARM_ARCH__ >= 6 ||
-		    ctx->cpu_architecture >= CPU_ARCH_ARMv5TE) {
-			emit(ARM_STRD_I(src[1], ARM_FP,
-				       EBPF_SCRATCH_TO_ARM_FP(reg[1])), ctx);
-		} else {
-			emit(ARM_STR_I(src[1], ARM_FP,
-				       EBPF_SCRATCH_TO_ARM_FP(reg[1])), ctx);
-			emit(ARM_STR_I(src[0], ARM_FP,
-				       EBPF_SCRATCH_TO_ARM_FP(reg[0])), ctx);
-		}
+		emit_strd_i(src[1], ARM_FP, EBPF_SCRATCH_TO_ARM_FP(reg[1]), ctx);
 	} else {
 		if (reg[1] != src[1])
 			emit(ARM_MOV_R(reg[1], src[1]), ctx);
@@ -896,12 +902,12 @@ static inline void emit_a32_mov_r64(const bool is64, const s8 dst[],
 	} else if (is_stacked(src_lo) && is_stacked(dst_lo)) {
 		const u8 *tmp = bpf2a32[TMP_REG_1];
 
-		emit(ARM_LDRD_I(tmp[1], ARM_FP, EBPF_SCRATCH_TO_ARM_FP(src_lo)), ctx);
-		emit(ARM_STRD_I(tmp[1], ARM_FP, EBPF_SCRATCH_TO_ARM_FP(dst_lo)), ctx);
+		emit_ldrd_i(tmp[1], ARM_FP, EBPF_SCRATCH_TO_ARM_FP(src_lo), ctx);
+		emit_strd_i(tmp[1], ARM_FP, EBPF_SCRATCH_TO_ARM_FP(dst_lo), ctx);
 	} else if (is_stacked(src_lo)) {
-		emit(ARM_LDRD_I(dst[1], ARM_FP, EBPF_SCRATCH_TO_ARM_FP(src_lo)), ctx);
+		emit_ldrd_i(dst[1], ARM_FP, EBPF_SCRATCH_TO_ARM_FP(src_lo), ctx);
 	} else if (is_stacked(dst_lo)) {
-		emit(ARM_STRD_I(src[1], ARM_FP, EBPF_SCRATCH_TO_ARM_FP(dst_lo)), ctx);
+		emit_strd_i(src[1], ARM_FP, EBPF_SCRATCH_TO_ARM_FP(dst_lo), ctx);
 	} else {
 		emit(ARM_MOV_R(dst[0], src[0]), ctx);
 		emit(ARM_MOV_R(dst[1], src[1]), ctx);
