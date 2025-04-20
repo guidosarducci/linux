@@ -2,6 +2,7 @@
 /*
  * Just-In-Time compiler for BPF filters on 32-bit ARM
  *
+ * Copyright (c) 2025 Tony Ambardar <tony.ambardar@gmail.com>
  * Copyright (c) 2023 Puranjay Mohan <puranjay12@gmail.com>
  * Copyright (c) 2017 Shubham Bansal <illusionist.neo@gmail.com>
  * Copyright (c) 2011 Mircea Gherzan <mgherzan@gmail.com>
