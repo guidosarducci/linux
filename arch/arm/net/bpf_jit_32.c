@@ -464,27 +464,25 @@ static inline int bpf2a32_offset(int bpf_to, int bpf_from,
 }
 
 /*
- * Move an immediate that's not an imm8m to a core register.
+ * Move an immediate, optionally using a fixed number of instructions
+ * to avoid changes in JITed program length during later JIT passes.
  */
-static inline void emit_mov_i_no8m(const u8 rd, u32 val, struct jit_ctx *ctx)
-{
-#if __LINUX_ARM_ARCH__ < 7
-	emit(ARM_LDR_I(rd, ARM_PC, imm_offset(val, ctx)), ctx);
-#else
-	emit(ARM_MOVW(rd, val & 0xffff), ctx);
-	if (val > 0xffff)
-		emit(ARM_MOVT(rd, val >> 16), ctx);
-#endif
-}
-
-static inline void emit_mov_i(const u8 rd, u32 val, struct jit_ctx *ctx)
+static inline void emit_mov_i(const u8 rd, u32 val, bool fixed, struct jit_ctx *ctx)
 {
 	int imm12 = imm8m(val);
 
-	if (imm12 >= 0)
+	if (imm12 >= 0 && !fixed) {
 		emit(ARM_MOV_I(rd, imm12), ctx);
-	else
-		emit_mov_i_no8m(rd, val, ctx);
+	} else {
+		/* Move an immediate that's not an imm8m to a core register */
+#if __LINUX_ARM_ARCH__ < 7
+		emit(ARM_LDR_I(rd, ARM_PC, imm_offset(val, ctx)), ctx);
+#else
+		emit(ARM_MOVW(rd, val & 0xffff), ctx);
+		if (val > 0xffff || fixed)
+			emit(ARM_MOVT(rd, val >> 16), ctx);
+#endif
+	}
 }
 
 static void emit_bx_r(u8 tgt_reg, struct jit_ctx *ctx)
@@ -568,7 +566,7 @@ static inline void emit_udivmod(u8 rd, u8 rm, u8 rn, struct jit_ctx *ctx, u8 op,
 			dst = (u32)jit_mod32;
 	}
 
-	emit_mov_i(ARM_IP, dst, ctx);
+	emit_mov_i(ARM_IP, dst, false, ctx);
 	emit_blx_r(ARM_IP, ctx);
 
 	/* Restore caller-saved registers from stack */
@@ -636,7 +634,7 @@ cont:
 			dst = (u32)jit_mod64;
 	}
 
-	emit_mov_i(ARM_IP, dst, ctx);
+	emit_mov_i(ARM_IP, dst, false, ctx);
 	emit_blx_r(ARM_IP, ctx);
 
 	/* Save return value */
@@ -735,26 +733,27 @@ static void arm_bpf_put_reg64(const s8 *reg, const s8 *src,
 	}
 }
 
-static inline void emit_a32_mov_i(const s8 dst, const u32 val,
+/* Move immediates, optionally using a fixed number of instructions */
+static inline void emit_a32_mov_i(const s8 dst, const u32 val, bool fixed,
 				  struct jit_ctx *ctx)
 {
 	const s8 *tmp = bpf2a32[TMP_REG_1];
 
 	if (is_stacked(dst)) {
-		emit_mov_i(tmp[1], val, ctx);
+		emit_mov_i(tmp[1], val, fixed, ctx);
 		arm_bpf_put_reg32(dst, tmp[1], ctx);
 	} else {
-		emit_mov_i(dst, val, ctx);
+		emit_mov_i(dst, val, fixed, ctx);
 	}
 }
 
-static void emit_a32_mov_i64(const s8 dst[], u64 val, struct jit_ctx *ctx)
+static void emit_a32_mov_i64(const s8 dst[], u64 val, bool fixed, struct jit_ctx *ctx)
 {
 	const s8 *tmp = bpf2a32[TMP_REG_1];
 	const s8 *rd = is_stacked(dst_lo) ? tmp : dst;
 
-	emit_mov_i(rd[1], (u32)val, ctx);
-	emit_mov_i(rd[0], val >> 32, ctx);
+	emit_mov_i(rd[1], (u32)val, fixed, ctx);
+	emit_mov_i(rd[0], val >> 32, fixed, ctx);
 
 	arm_bpf_put_reg64(dst, rd, ctx);
 }
@@ -763,7 +762,7 @@ static void emit_a32_mov_i64(const s8 dst[], u64 val, struct jit_ctx *ctx)
 static inline void emit_cond_zext(const s8 *rd, struct jit_ctx *ctx)
 {
 		if (!ctx->prog->aux->verifier_zext)
-			emit_a32_mov_i(rd[0], 0, ctx);
+			emit_a32_mov_i(rd[0], 0, false, ctx);
 }
 
 /* Sign extended move */
@@ -773,7 +772,7 @@ static inline void emit_a32_mov_se_i64(const bool is64, const s8 dst[],
 
 	if (is64 && (val & (1<<31)))
 		val64 |= 0xffffffff00000000ULL;
-	emit_a32_mov_i64(dst, val64, ctx);
+	emit_a32_mov_i64(dst, val64, false, ctx);
 }
 
 static inline void emit_a32_add_r(const u8 dst, const u8 src,
@@ -1242,7 +1241,7 @@ static inline void emit_str_r(const s8 dst, const s8 src[],
 	rd = arm_bpf_get_reg32(dst, tmp[1], ctx);
 
 	if (!is_ldst_imm(off, sz)) {
-		emit_a32_mov_i(tmp[0], off, ctx);
+		emit_a32_mov_i(tmp[0], off, false, ctx);
 		emit(ARM_ADD_R(tmp[0], tmp[0], rd), ctx);
 		rd = tmp[0];
 		off = 0;
@@ -1276,7 +1275,7 @@ static inline void emit_ldx_r(const s8 dst[], const s8 src,
 	s8 rm = src;
 
 	if (!is_ldst_imm(off, sz)) {
-		emit_a32_mov_i(tmp[0], off, ctx);
+		emit_a32_mov_i(tmp[0], off, false, ctx);
 		emit(ARM_ADD_R(tmp[0], tmp[0], src), ctx);
 		rm = tmp[0];
 		off = 0;
@@ -1327,7 +1326,7 @@ static inline void emit_ldsx_r(const s8 dst[], const s8 src,
 			emit(ARM_ADD_I(tmp[0], src, add_off), ctx);
 			rm = tmp[0];
 		} else {
-			emit_a32_mov_i(tmp[0], off, ctx);
+			emit_a32_mov_i(tmp[0], off, false, ctx);
 			emit(ARM_ADD_R(tmp[0], tmp[0], src), ctx);
 			rm = tmp[0];
 		}
@@ -1630,7 +1629,7 @@ static int build_insn(const struct bpf_insn *insn, struct jit_ctx *ctx)
 		case BPF_X:
 			if (imm == 1) {
 				/* Special mov32 for zext */
-				emit_a32_mov_i(dst_hi, 0, ctx);
+				emit_a32_mov_i(dst_hi, 0, false, ctx);
 				break;
 			}
 			if (insn->off)
@@ -1706,7 +1705,7 @@ static int build_insn(const struct bpf_insn *insn, struct jit_ctx *ctx)
 			break;
 		case BPF_K:
 			rt = tmp2[0];
-			emit_a32_mov_i(rt, imm, ctx);
+			emit_a32_mov_i(rt, imm, false, ctx);
 			break;
 		default:
 			rt = src_lo;
@@ -1831,7 +1830,7 @@ emit_bswap_uxt:
 		case 16:
 			/* zero-extend 16 bits into 64 bits */
 #if __LINUX_ARM_ARCH__ < 6
-			emit_a32_mov_i(tmp2[1], 0xffff, ctx);
+			emit_a32_mov_i(tmp2[1], 0xffff, false, ctx);
 			emit(ARM_AND_R(rd[1], rd[1], tmp2[1]), ctx);
 #else /* ARMv6+ */
 			emit(ARM_UXTH(rd[1], rd[1]), ctx);
@@ -1854,7 +1853,7 @@ exit:
 	{
 		u64 val = (u32)imm | (u64)insn[1].imm << 32;
 
-		emit_a32_mov_i64(dst, val, ctx);
+		emit_a32_mov_i64(dst, val, bpf_pseudo_func(insn), ctx);
 
 		return 1;
 	}
@@ -1889,7 +1888,7 @@ exit:
 		case BPF_W:
 		case BPF_H:
 		case BPF_B:
-			emit_a32_mov_i(tmp2[1], imm, ctx);
+			emit_a32_mov_i(tmp2[1], imm, false, ctx);
 			break;
 		}
 		emit_str_r(dst_lo, tmp2, off, ctx, BPF_SIZE(code));
@@ -2063,7 +2062,7 @@ go_jmp:
 		emit_push_r64(r4, ctx);
 		emit_push_r64(r3, ctx);
 
-		emit_a32_mov_i(tmp[1], func, ctx);
+		emit_a32_mov_i(tmp[1], func, false, ctx);
 		emit_blx_r(tmp[1], ctx);
 
 		emit(ARM_ADD_I(ARM_SP, ARM_SP, imm8m(24)), ctx); // callee clean
