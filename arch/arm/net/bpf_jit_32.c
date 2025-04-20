@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Just-In-Time compiler for eBPF filters on 32bit ARM
+ * Just-In-Time compiler for BPF filters on 32-bit ARM
  *
  * Copyright (c) 2023 Puranjay Mohan <puranjay12@gmail.com>
  * Copyright (c) 2017 Shubham Bansal <illusionist.neo@gmail.com>
@@ -26,15 +26,15 @@
 #include "bpf_jit_32.h"
 
 /*
- * eBPF prog stack layout:
+ * BPF prog stack layout:
  *
  *                         high
  * original ARM_SP =>     +-----+
  *                        |     | callee saved registers
  *                        +-----+ <= (BPF_FP + SCRATCH_SIZE)
- *                        | ... | eBPF JIT scratch space
- * eBPF fp register =>    +-----+
- *   (BPF_FP)             | ... | eBPF prog stack
+ *                        | ... | JIT stacked BPF regs
+ * BPF fp register =>     +-----+
+ *   (BPF_FP)             | ... | BPF prog stack
  *                        +-----+
  *                        |RSVD | JIT scratchpad
  * current ARM_SP =>      +-----+ <= (BPF_FP - STACK_SIZE + SCRATCH_SIZE)
@@ -70,8 +70,8 @@
  * When popping registers off the stack at the end of a BPF function, we
  * reference them via the current ARM_FP register.
  *
- * Some eBPF operations are implemented via a call to a helper function.
- * Such calls are "invisible" in the eBPF code, so it is up to the calling
+ * Some BPF operations are implemented via a call to a helper function.
+ * Such calls are "invisible" in the BPF code, so it is up to the calling
  * program to preserve any caller-saved ARM registers during the call. The
  * JIT emits code to push and pop those registers onto the stack, immediately
  * above the callee stack frame.
@@ -133,47 +133,45 @@ enum {
 #define FLAG_IMM_OVERFLOW	(1 << 0)
 
 /*
- * Map eBPF registers to ARM 32bit registers or stack scratch space.
+ * Map BPF registers to ARM 32-bit registers or stack register space.
  *
- * 1. First argument is passed using the arm 32bit registers and rest of the
- * arguments are passed on stack scratch space.
- * 2. First callee-saved argument is mapped to arm 32 bit registers and rest
- * arguments are mapped to scratch space on stack.
- * 3. We need two 64 bit temp registers to do complex operations on eBPF
+ * 1. First argument is passed using the arm 32-bit registers and rest of the
+ * arguments are passed on stack register space.
+ * 2. First callee-saved register is mapped to arm 32-bit registers and rest
+ * are mapped to register space on stack.
+ * 3. We need two 64-bit temp registers to do complex operations on BPF
  * registers.
  *
- * As the eBPF registers are all 64 bit registers and arm has only 32 bit
- * registers, we have to map each eBPF registers with two arm 32 bit regs or
- * scratch memory space and we have to build eBPF 64 bit register from those.
+ * As the BPF registers are all 64-bit registers and arm has only 32-bit
+ * registers, we have to map each BPF register with two arm 32-bit regs or
+ * stack memory space and we have to build BPF 64-bit register from those.
  *
  */
 static const s8 bpf2a32[][2] = {
-	/* return value from in-kernel function, and exit value from eBPF */
+	/* Return value from in-kernel function, and exit value from BPF */
 	[BPF_REG_0] = {ARM_R1, ARM_R0},
-	/* arguments from eBPF program to in-kernel function */
+	/* Five arguments from BPF program to in-kernel function */
 	[BPF_REG_1] = {ARM_R3, ARM_R2},
-	/* Stored on stack scratch space */
+	/* Stored in stack space for BPF registers */
 	[BPF_REG_2] = {STACK_OFFSET(BPF_R2_HI), STACK_OFFSET(BPF_R2_LO)},
 	[BPF_REG_3] = {STACK_OFFSET(BPF_R3_HI), STACK_OFFSET(BPF_R3_LO)},
 	[BPF_REG_4] = {STACK_OFFSET(BPF_R4_HI), STACK_OFFSET(BPF_R4_LO)},
 	[BPF_REG_5] = {STACK_OFFSET(BPF_R5_HI), STACK_OFFSET(BPF_R5_LO)},
-	/* callee saved registers that in-kernel function will preserve */
+	/* Callee saved registers that in-kernel function will preserve */
 	[BPF_REG_6] = {ARM_R5, ARM_R4},
-	/* Stored on stack scratch space */
+	/* Stored in stack space for BPF registers */
 	[BPF_REG_7] = {STACK_OFFSET(BPF_R7_HI), STACK_OFFSET(BPF_R7_LO)},
 	[BPF_REG_8] = {STACK_OFFSET(BPF_R8_HI), STACK_OFFSET(BPF_R8_LO)},
 	[BPF_REG_9] = {STACK_OFFSET(BPF_R9_HI), STACK_OFFSET(BPF_R9_LO)},
-	/* Read only Frame Pointer to access Stack */
+	/* Read only Frame Pointer to access BPF Stack */
 	[BPF_REG_FP] = {STACK_OFFSET(BPF_FP_HI), STACK_OFFSET(BPF_FP_LO)},
-	/* Temporary Register for BPF JIT, can be used
-	 * for constant blindings and others.
-	 */
+	/* Temporary Registers for BPF JIT, also callee saved */
 	[TMP_REG_1] = {ARM_R7, ARM_R6},
 	[TMP_REG_2] = {ARM_R9, ARM_R8},
-	/* Tail call count. Stored on stack scratch space. */
+	/* Tail Call Count. Stored in stack space for BPF registers. */
 	[TCALL_CNT] = {STACK_OFFSET(BPF_TC_HI), STACK_OFFSET(BPF_TC_LO)},
-	/* temporary register for blinding constants.
-	 * Stored on stack scratch space.
+	/* Temporary Register for verifier patching (e.g blinding).
+	 * Stored in stack space for BPF registers.
 	 */
 	[BPF_REG_AX] = {STACK_OFFSET(BPF_AX_HI), STACK_OFFSET(BPF_AX_LO)},
 };
@@ -190,7 +188,7 @@ static const s8 bpf2a32[][2] = {
  * idx			:	index of current last JITed instruction.
  * prologue_bytes	:	bytes used in prologue.
  * epilogue_offset	:	offset of epilogue starting.
- * offsets		:	array of eBPF instruction offsets in
+ * offsets		:	array of BPF instruction offsets in
  *				JITed code.
  * target		:	final JITed code.
  * epilogue_bytes	:	no of bytes used in epilogue.
@@ -1352,7 +1350,7 @@ static inline void emit_ldsx_r(const s8 dst[], const s8 src,
 	arm_bpf_put_reg64(dst, rd, ctx);
 }
 
-/* Arithmatic Operation */
+/* Arithmetic Operation */
 static inline void emit_ar_r(const u8 rd, const u8 rt, const u8 rm,
 			     const u8 rn, struct jit_ctx *ctx, u8 op,
 			     bool is_jmp64) {
@@ -1515,7 +1513,7 @@ static inline void emit_rev32(const u8 rd, const u8 rn, struct jit_ctx *ctx)
 #endif
 }
 
-// push the scratch stack register on top of the stack
+/* Push the stacked BPF register on top of the stack */
 static inline void emit_push_r64(const s8 src[], struct jit_ctx *ctx)
 {
 	const s8 *tmp2 = bpf2a32[TMP_REG_2];
@@ -1585,11 +1583,10 @@ static void build_epilogue(struct jit_ctx *ctx)
 }
 
 /*
- * Convert an eBPF instruction to native instruction, i.e
- * JITs an eBPF instruction.
+ * Convert a BPF insn to native insns, i.e. JIT-compile one BPF insn.
  * Returns :
- *	0  - Successfully JITed an 8-byte eBPF instruction
- *	>0 - Successfully JITed a 16-byte eBPF instruction
+ *	0  - Successfully JITed an 8-byte BPF instruction
+ *	>0 - Successfully JITed a 16-byte BPF instruction
  *	<0 - Failed to JIT.
  */
 static int build_insn(const struct bpf_insn *insn, struct jit_ctx *ctx)
@@ -2119,7 +2116,7 @@ static int build_body(struct jit_ctx *ctx)
 		if (ctx->target == NULL)
 			ctx->offsets[i] = ctx->idx;
 
-		/* If unsuccesful, return with error code */
+		/* If unsuccessful, return with error code */
 		if (ret)
 			return ret;
 	}
@@ -2185,7 +2182,7 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 		goto out;
 	}
 
-	/* 1) fake pass to find in the length of the JITed code,
+	/* 1) First pass to find the length of the JITed code,
 	 * to compute ctx->offsets and other context variables
 	 * needed to compute final JITed code.
 	 * Also, calculate random starting pointer/start of JITed code
