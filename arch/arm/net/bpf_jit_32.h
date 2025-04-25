@@ -191,6 +191,8 @@
 
 #define ARM_EOR_R(rd, rn, rm)	_AL3_R(ARM_INST_EOR, rd, rn, rm)
 #define ARM_EOR_I(rd, rn, imm)	_AL3_I(ARM_INST_EOR, rd, rn, imm)
+#define ARM_EOR_SI(rd, rn, rm, type, imm6)	\
+	(ARM_EOR_R(rd, rn, rm) | (type) << 5 | (imm6) << 7)
 
 #define ARM_LDR_R(rt, rn, rm)	(ARM_INST_LDR_R | ARM_INST_LDST__U \
 				 | (rt) << 12 | (rn) << 16 \
