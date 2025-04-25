@@ -175,8 +175,6 @@ static const s8 bpf2a32[][2] = {
 #define src_lo	src[1]
 #define src_hi	src[0]
 
-#undef __LINUX_ARM_ARCH__
-#define __LINUX_ARM_ARCH__ (4)
 /*
  * JIT Context:
  *
@@ -383,8 +381,13 @@ static void jit_fill_hole(void *area, unsigned int size)
 	memset32(area, __opcode_to_mem_arm(ARM_INST_UDF), size / 4);
 }
 
+#if defined(CONFIG_AEABI) && (__LINUX_ARM_ARCH__ >= 5)
 /* EABI requires the stack to be aligned to 64-bit boundaries */
 #define JIT_ALIGN(x)	ALIGN(x, 8)
+#else
+/* Stack must be aligned to 32-bit boundaries */
+#define JIT_ALIGN(x)	ALIGN(x, 4)
+#endif
 
 #if __LINUX_ARM_ARCH__ < 7
 
@@ -2851,7 +2854,7 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 
 	memset(&ctx, 0, sizeof(ctx));
 	ctx.prog = prog;
-	ctx.cpu_architecture = CPU_ARCH_ARMv4T;
+	ctx.cpu_architecture = cpu_architecture();
 	ctx.stack_size = JIT_ALIGN(prog->aux->stack_depth);
 
 	/* Not able to allocate memory for offsets[], then
