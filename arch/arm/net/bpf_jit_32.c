@@ -2732,13 +2732,15 @@ notyet:
 		return -EINVAL;
 	}
 
-	if (ctx->flags & FLAG_IMM_OVERFLOW)
+	if (ctx->flags & FLAG_IMM_OVERFLOW) {
 		/*
 		 * this instruction generated an overflow when
 		 * trying to access the literal pool, so
 		 * delegate this filter to the kernel interpreter.
 		 */
-		return -1;
+		pr_warn("load offset to literal pool out of range\n");
+		return -EFAULT;
+	}
 	return 0;
 }
 
