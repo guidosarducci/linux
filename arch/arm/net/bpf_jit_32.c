@@ -1754,18 +1754,10 @@ static inline void emit_rev32(const u8 rd, const u8 rn, struct jit_ctx *ctx)
 #if __LINUX_ARM_ARCH__ < 6
 	const s8 *tmp2 = bpf2a32[TMP_REG_2];
 
-	emit(ARM_AND_I(tmp2[1], rn, 0xff), ctx);
-	emit(ARM_MOV_SI(tmp2[0], rn, SRTYPE_LSR, 24), ctx);
-	emit(ARM_ORR_SI(ARM_IP, tmp2[0], tmp2[1], SRTYPE_LSL, 24), ctx);
-
-	emit(ARM_MOV_SI(tmp2[1], rn, SRTYPE_LSR, 8), ctx);
-	emit(ARM_AND_I(tmp2[1], tmp2[1], 0xff), ctx);
-	emit(ARM_MOV_SI(tmp2[0], rn, SRTYPE_LSR, 16), ctx);
-	emit(ARM_AND_I(tmp2[0], tmp2[0], 0xff), ctx);
-	emit(ARM_MOV_SI(tmp2[0], tmp2[0], SRTYPE_LSL, 8), ctx);
-	emit(ARM_ORR_SI(tmp2[0], tmp2[0], tmp2[1], SRTYPE_LSL, 16), ctx);
-	emit(ARM_ORR_R(rd, ARM_IP, tmp2[0]), ctx);
-
+	emit(ARM_MOV_SI(rd, rn, SRTYPE_ROR, 8), ctx);
+	emit(ARM_EOR_SI(tmp2[1], rn, rn, SRTYPE_ROR, 16), ctx);
+	emit(ARM_BIC_I(tmp2[1], tmp2[1], imm8m(0xff0000)), ctx);
+	emit(ARM_EOR_SI(rd, rd, tmp2[1], SRTYPE_LSR, 8), ctx);
 #else /* ARMv6+ */
 	emit(ARM_REV(rd, rn), ctx);
 #endif
