@@ -1408,6 +1408,50 @@ static inline void emit_ar_r(const u8 rd, const u8 rt, const u8 rm,
 	}
 }
 
+/* Return addr of kernel 32-bit and 64-bit atomic functions */
+static u32 get_atomic_func(u8 op, u8 size)
+{
+	const bool bpf_w = size == BPF_W;
+
+	switch (op) {
+	case BPF_ADD:
+		return bpf_w ? (u32)&atomic_add :
+			       (u32)&atomic64_add;
+	case BPF_ADD | BPF_FETCH:
+		return bpf_w ? (u32)&atomic_fetch_add :
+			       (u32)&atomic64_fetch_add;
+	case BPF_SUB:
+		return bpf_w ? (u32)&atomic_sub :
+			       (u32)&atomic64_sub;
+	case BPF_SUB | BPF_FETCH:
+		return bpf_w ? (u32)&atomic_fetch_sub :
+			       (u32)&atomic64_fetch_sub;
+	case BPF_OR:
+		return bpf_w ? (u32)&atomic_or :
+			       (u32)&atomic64_or;
+	case BPF_OR | BPF_FETCH:
+		return bpf_w ? (u32)&atomic_fetch_or :
+			       (u32)&atomic64_fetch_or;
+	case BPF_AND:
+		return bpf_w ? (u32)&atomic_and :
+			       (u32)&atomic64_and;
+	case BPF_AND | BPF_FETCH:
+		return bpf_w ? (u32)&atomic_fetch_and :
+			       (u32)&atomic64_fetch_and;
+	case BPF_XOR:
+		return bpf_w ? (u32)&atomic_xor :
+			       (u32)&atomic64_xor;
+	case BPF_XOR | BPF_FETCH:
+		return bpf_w ? (u32)&atomic_fetch_xor :
+			       (u32)&atomic64_fetch_xor;
+	case BPF_XCHG:
+		return bpf_w ? (u32)&atomic_xchg :
+			       (u32)&atomic64_xchg;
+	}
+
+	return 0;
+}
+
 /* Atomic read-modify-write (32-bit kernel fallback):
  *   lock *(u32 *)(dst_reg + off) <op>= src_reg
  *   src_reg = atomic_fetch_<op>(dst_reg + off, src_reg)
@@ -1447,41 +1491,8 @@ static void emit_atomic_r(const s8 dst, const s8 src, s16 off, u8 op,
 	}
 
 	/* Emit function call */
-	switch (op) {
-	case BPF_ADD:
-		addr = (u32)&atomic_add;
-		break;
-	case BPF_ADD | BPF_FETCH:
-		addr = (u32)&atomic_fetch_add;
-		break;
-	case BPF_SUB:
-		addr = (u32)&atomic_sub;
-		break;
-	case BPF_SUB | BPF_FETCH:
-		addr = (u32)&atomic_fetch_sub;
-		break;
-	case BPF_OR:
-		addr = (u32)&atomic_or;
-		break;
-	case BPF_OR | BPF_FETCH:
-		addr = (u32)&atomic_fetch_or;
-		break;
-	case BPF_AND:
-		addr = (u32)&atomic_and;
-		break;
-	case BPF_AND | BPF_FETCH:
-		addr = (u32)&atomic_fetch_and;
-		break;
-	case BPF_XOR:
-		addr = (u32)&atomic_xor;
-		break;
-	case BPF_XOR | BPF_FETCH:
-		addr = (u32)&atomic_fetch_xor;
-		break;
-	case BPF_XCHG:
-		addr = (u32)&atomic_xchg;
-		break;
-	}
+	addr = get_atomic_func(op, BPF_W);
+
 	emit_mov_i(tmp2[0], addr, false, ctx);
 	emit_blx_r(tmp2[0], ctx);
 
@@ -1536,41 +1547,8 @@ static void emit_atomic_r64(const s8 dst, const s8 src[], s16 off, u8 op,
 	}
 
 	/* Emit function call */
-	switch (op) {
-	case BPF_ADD:
-		addr = (u32)&atomic64_add;
-		break;
-	case BPF_ADD | BPF_FETCH:
-		addr = (u32)&atomic64_fetch_add;
-		break;
-	case BPF_SUB:
-		addr = (u32)&atomic64_sub;
-		break;
-	case BPF_SUB | BPF_FETCH:
-		addr = (u32)&atomic64_fetch_sub;
-		break;
-	case BPF_OR:
-		addr = (u32)&atomic64_or;
-		break;
-	case BPF_OR | BPF_FETCH:
-		addr = (u32)&atomic64_fetch_or;
-		break;
-	case BPF_AND:
-		addr = (u32)&atomic64_and;
-		break;
-	case BPF_AND | BPF_FETCH:
-		addr = (u32)&atomic64_fetch_and;
-		break;
-	case BPF_XOR:
-		addr = (u32)&atomic64_xor;
-		break;
-	case BPF_XOR | BPF_FETCH:
-		addr = (u32)&atomic64_fetch_xor;
-		break;
-	case BPF_XCHG:
-		addr = (u32)&atomic64_xchg;
-		break;
-	}
+	addr = get_atomic_func(op, BPF_DW);
+
 	emit_mov_i(tmp[0], addr, false, ctx);
 	emit_blx_r(tmp[0], ctx);
 
