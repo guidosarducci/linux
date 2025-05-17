@@ -376,10 +376,8 @@ static u32 arm_bpf_ldst_imm8(u32 op, u8 rt, u8 rn, s16 imm8)
  */
 static void jit_fill_hole(void *area, unsigned int size)
 {
-	u32 *ptr;
 	/* We are guaranteed to have aligned memory. */
-	for (ptr = area; size >= sizeof(u32); size -= sizeof(u32))
-		*ptr++ = __opcode_to_mem_arm(ARM_INST_UDF);
+	memset32(area, __opcode_to_mem_arm(ARM_INST_UDF), size / 4);
 }
 
 #if defined(CONFIG_AEABI) && (__LINUX_ARM_ARCH__ >= 5)
