@@ -6,8 +6,8 @@
 #include "bpf_misc.h"
 #include "errno.h"
 
-char *user_ptr = (char *)1;
-char *invalid_kern_ptr = (char *)-1;
+static char *user_ptr = (char *)1;
+static char *invalid_kern_ptr = (char *)-1;
 
 /*
  * When passing userspace pointers, the error code differs based on arch:
