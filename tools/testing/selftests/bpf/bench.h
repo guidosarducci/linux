@@ -62,7 +62,7 @@ struct bench {
 };
 
 struct counter {
-	long value;
+	int value;
 } __attribute__((aligned(128)));
 
 extern struct env env;
@@ -83,17 +83,17 @@ void grace_period_latency_basic_stats(struct bench_res res[], int res_cnt,
 void grace_period_ticks_basic_stats(struct bench_res res[], int res_cnt,
 				    struct basic_stats *gp_stat);
 
-static inline void atomic_inc(long *value)
+static inline void atomic_inc(int *value)
 {
 	(void)__atomic_add_fetch(value, 1, __ATOMIC_RELAXED);
 }
 
-static inline void atomic_add(long *value, long n)
+static inline void atomic_add(int *value, int n)
 {
 	(void)__atomic_add_fetch(value, n, __ATOMIC_RELAXED);
 }
 
-static inline long atomic_swap(long *value, long n)
+static inline long atomic_swap(int *value, int n)
 {
 	return __atomic_exchange_n(value, n, __ATOMIC_RELAXED);
 }

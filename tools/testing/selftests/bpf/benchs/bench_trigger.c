@@ -408,7 +408,7 @@ static void *uprobe_producer_nop5(void *input)
 
 static void usetup(bool use_retprobe, bool use_multi, void *target_addr)
 {
-	size_t uprobe_offset;
+	ssize_t uprobe_offset;
 	struct bpf_link *link;
 	int err;
 

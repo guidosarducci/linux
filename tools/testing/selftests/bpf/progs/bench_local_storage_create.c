@@ -6,9 +6,9 @@
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_helpers.h>
 
-long create_errs = 0;
-long create_cnts = 0;
-long kmalloc_cnts = 0;
+int create_errs = 0;
+int create_cnts = 0;
+int kmalloc_cnts = 0;
 __u32 bench_pid = 0;
 
 struct storage {

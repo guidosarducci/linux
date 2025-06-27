@@ -15,7 +15,7 @@ char cipher[128] = {};
 u32 key_len, authsize;
 char dst[256] = {};
 u8 key[256] = {};
-long hits = 0;
+int hits = 0;
 int status;
 
 SEC("syscall")

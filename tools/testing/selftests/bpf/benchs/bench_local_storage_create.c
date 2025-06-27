@@ -17,7 +17,7 @@ struct thread {
 
 static struct bench_local_storage_create *skel;
 static struct thread *threads;
-static long create_owner_errs;
+static int create_owner_errs;
 static int storage_type = BPF_MAP_TYPE_SK_STORAGE;
 static int batch_sz = 32;
 

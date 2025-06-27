@@ -8,7 +8,7 @@
 char _license[] SEC("license") = "GPL";
 
 u32 nr_loops;
-long hits;
+int hits;
 
 static int empty_callback(__u32 index, void *data)
 {
