@@ -107,7 +107,7 @@ int one_switch_non_zero_sec_off(struct simple_ctx *ctx)
 	return 0;
 }
 
-SEC("fentry/" SYS_PREFIX "sys_nanosleep")
+SEC("fentry/" SYS_NANOSLEEP)
 int simple_test_other_sec(struct pt_regs *ctx)
 {
 	__u64 x = in_user;
@@ -356,7 +356,7 @@ int use_static_global2(struct simple_ctx *ctx)
 	return __static_global(ctx->x);
 }
 
-SEC("fentry/" SYS_PREFIX "sys_nanosleep")
+SEC("fentry/" SYS_NANOSLEEP)
 int use_static_global_other_sec(void *ctx)
 {
 	if (bpf_get_current_pid_tgid() >> 32 != pid)
@@ -412,7 +412,7 @@ int use_nonstatic_global2(struct simple_ctx *ctx)
 	return __nonstatic_global(ctx->x);
 }
 
-SEC("fentry/" SYS_PREFIX "sys_nanosleep")
+SEC("fentry/" SYS_NANOSLEEP)
 int use_nonstatic_global_other_sec(void *ctx)
 {
 	if (bpf_get_current_pid_tgid() >> 32 != pid)
