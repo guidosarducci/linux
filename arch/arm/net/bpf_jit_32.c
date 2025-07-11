@@ -19,6 +19,7 @@
 #include <linux/if_vlan.h>
 #include <linux/math64.h>
 
+#include <asm/asm-extable.h>
 #include <asm/cacheflush.h>
 #include <asm/hwcap.h>
 #include <asm/opcodes.h>
@@ -120,7 +121,8 @@ enum {
 #define TMP_REG_2	(MAX_BPF_JIT_REG + 1)	/* TEMP Register 2 */
 #define TCALL_CNT	(MAX_BPF_JIT_REG + 2)	/* Tail Call Count */
 
-#define FLAG_IMM_OVERFLOW	(1 << 0)
+#define FLAG_IMM_OVERFLOW	BIT(0)
+#define FLAG_EX_TABLE_ERR	BIT(1)
 
 /*
  * Map BPF registers to ARM 32-bit registers or stack register space.
@@ -198,6 +200,7 @@ struct jit_ctx {
 	u32 *offsets;
 	u32 *target;
 	u32 stack_size;
+	u32 exentry_idx;
 	s32 prologue_tcc_skip;	/* offset: skip BPF FP, TCC, R1 setup */
 	s32 epilogue_main_skip;	/* offset: skip restoring BPF callee-saved */
 #if __LINUX_ARM_ARCH__ < 7
@@ -445,6 +448,78 @@ static inline int bpf2a32_offset(int bpf_to, int bpf_from,
 	from = ctx->offsets[bpf_from + 1];
 
 	return to - from - 1;
+}
+
+#define EX_DONT_CLEAR		(ARM_PC)	 /* ARM reg unused for BPF */
+
+bool ex_handler_bpf(const struct exception_table_entry *ex,
+		    struct pt_regs *regs)
+{
+	u32 ex_data = ex->data;
+	u8 dst_reg = FIELD_GET(EX_DATA_REG, ex_data);
+	u8 offset = FIELD_GET(EX_DATA_FIX_OFF, ex_data);
+	bool is_arm_rd = FIELD_GET(EX_DATA_RD_FLAG, ex_data);
+
+	if (dst_reg != EX_DONT_CLEAR) {
+		regs->uregs[dst_reg] = 0;
+		if (is_arm_rd)
+			regs->uregs[dst_reg + 1] = 0;
+	}
+	regs->ARM_pc += offset;
+	return true;
+}
+
+/* For faultable load/stores, add an entry to the exception table.
+ * This must be called immediately after emitting the insn.
+ */
+static void add_exception_handler(u8 code, u8 dst_reg, bool clear_reg,
+				 struct jit_ctx *ctx)
+{
+	struct exception_table_entry *ex;
+	bool is_arm_rd;
+	u8 offset = 4;
+	u32 *pc;
+
+	if (BPF_MODE(code) != BPF_PROBE_MEM &&
+	    BPF_MODE(code) != BPF_PROBE_MEMSX &&
+	    BPF_MODE(code) != BPF_PROBE_MEM32 &&
+	    BPF_MODE(code) != BPF_PROBE_ATOMIC)
+		return;
+
+	/*
+	 * A BPF_PROBE_xxx insn may be JITed to multiple faultable ARM
+	 * insns, so count these during first pass and later reconcile
+	 * with prog->aux->num_exentries.
+	 */
+	if (ctx->target == NULL) {
+		ctx->exentry_idx++;
+		return;
+	}
+
+	if (WARN_ON_ONCE(ctx->exentry_idx >= ctx->prog->aux->num_exentries) ||
+	    !ctx->prog->aux->extable) {
+		/* Signal error into flags since no return val */
+		ctx->flags |= FLAG_EX_TABLE_ERR;
+		return;
+	}
+
+	ex = &ctx->prog->aux->extable[ctx->exentry_idx];
+	pc = &ctx->target[ctx->idx - 1];
+
+	is_arm_rd = (*pc & ARM_INST_LDRD_I) == ARM_INST_LDRD_I;
+	ex->insn = (unsigned long)pc;
+
+	if (!clear_reg)
+		dst_reg = EX_DONT_CLEAR;
+
+	ex->data = FIELD_PREP(EX_DATA_FIX_OFF, offset) |
+		   FIELD_PREP(EX_DATA_REG, dst_reg) |
+		   FIELD_PREP(EX_DATA_RD_FLAG, is_arm_rd);
+
+	ex->type = EX_TYPE_BPF;
+	ex->is_typed = true;
+
+	ctx->exentry_idx++;
 }
 
 /*
@@ -1279,9 +1354,10 @@ static inline void emit_str_r(const s8 dst, const s8 src[],
 
 /* dst = *(size*)(src + off) */
 static inline void emit_ldx_r(const s8 dst[], const s8 src,
-			      s16 off, struct jit_ctx *ctx, const u8 sz){
+			      s16 off, struct jit_ctx *ctx, const u8 code){
 	const s8 *tmp = bpf2a32[TMP_REG_1];
 	const s8 *rd = is_stacked(dst_lo) ? tmp : dst;
+	const u8 sz = BPF_SIZE(code);
 	s8 rm = src;
 
 	if (!is_ldst_imm(off, sz)) {
@@ -1297,23 +1373,28 @@ static inline void emit_ldx_r(const s8 dst[], const s8 src,
 	case BPF_B:
 		/* Load a Byte */
 		emit(ARM_LDRB_I(rd[1], rm, off), ctx);
+		add_exception_handler(code, rd[1], true, ctx);
 		emit_cond_zext(rd, ctx);
 		break;
 	case BPF_H:
 		/* Load a HalfWord */
 		emit(ARM_LDRH_I(rd[1], rm, off), ctx);
+		add_exception_handler(code, rd[1], true, ctx);
 		emit_cond_zext(rd, ctx);
 		break;
 	case BPF_W:
 		/* Load a Word */
 		emit(ARM_LDR_I(rd[1], rm, off), ctx);
+		add_exception_handler(code, rd[1], true, ctx);
 //FIXME		emit_cond_zext(rd, ctx);
 		emit_a32_mov_i(rd[0], 0, false, ctx); // FORCE ZEXT
 		break;
 	case BPF_DW:
 		/* Load a Double Word */
 		emit(ARM_LDR_I(rd[1], rm, off), ctx);
+		add_exception_handler(code, rd[1], true, ctx);
 		emit(ARM_LDR_I(rd[0], rm, off + 4), ctx);
+		add_exception_handler(code, rd[0], true, ctx);
 		break;
 	}
 	arm_bpf_put_reg64(dst, rd, ctx);
@@ -1321,9 +1402,10 @@ static inline void emit_ldx_r(const s8 dst[], const s8 src,
 
 /* dst = *(signed size*)(src + off) */
 static inline void emit_ldsx_r(const s8 dst[], const s8 src,
-			       s16 off, struct jit_ctx *ctx, const u8 sz){
+			       s16 off, struct jit_ctx *ctx, const u8 code){
 	const s8 *tmp = bpf2a32[TMP_REG_1];
 	const s8 *rd = is_stacked(dst_lo) ? tmp : dst;
+	const u8 sz = BPF_SIZE(code);
 	s8 rm = src;
 	int add_off;
 
@@ -1358,6 +1440,9 @@ static inline void emit_ldsx_r(const s8 dst[], const s8 src,
 		emit(ARM_LDR_I(rd[1], rm, off), ctx);
 		break;
 	}
+	/* Trap ARM exceptions during BPF PROBE insns */
+	add_exception_handler(code, rd[1], true, ctx);
+
 	/* Carry the sign extension to upper 32 bits */
 	emit(ARM_ASR_I(rd[0], rd[1], 31), ctx);
 	arm_bpf_put_reg64(dst, rd, ctx);
@@ -2395,15 +2480,22 @@ exit:
 	case BPF_LDX | BPF_MEM | BPF_H:
 	case BPF_LDX | BPF_MEM | BPF_B:
 	case BPF_LDX | BPF_MEM | BPF_DW:
+	case BPF_LDX | BPF_PROBE_MEM | BPF_W:
+	case BPF_LDX | BPF_PROBE_MEM | BPF_H:
+	case BPF_LDX | BPF_PROBE_MEM | BPF_B:
+	case BPF_LDX | BPF_PROBE_MEM | BPF_DW:
 	/* LDSX: dst = *(signed size *)(src + off) */
 	case BPF_LDX | BPF_MEMSX | BPF_B:
 	case BPF_LDX | BPF_MEMSX | BPF_H:
 	case BPF_LDX | BPF_MEMSX | BPF_W:
+	case BPF_LDX | BPF_PROBE_MEMSX | BPF_B:
+	case BPF_LDX | BPF_PROBE_MEMSX | BPF_H:
+	case BPF_LDX | BPF_PROBE_MEMSX | BPF_W:
 		rn = arm_bpf_get_reg32(src_lo, tmp2[1], ctx);
 		if (BPF_MODE(insn->code) == BPF_MEMSX)
-			emit_ldsx_r(dst, rn, off, ctx, BPF_SIZE(code));
+			emit_ldsx_r(dst, rn, off, ctx, code);
 		else
-			emit_ldx_r(dst, rn, off, ctx, BPF_SIZE(code));
+			emit_ldx_r(dst, rn, off, ctx, code);
 		break;
 	/* speculation barrier */
 	case BPF_ST | BPF_NOSPEC:
@@ -2706,6 +2798,14 @@ notyet:
 		pr_warn("load offset to literal pool out of range\n");
 		return -EFAULT;
 	}
+	if (ctx->flags & FLAG_EX_TABLE_ERR) {
+		/*
+		 * This instruction required an exception handler
+		 * but failed to build it.
+		 */
+		pr_warn("failure building exception table\n");
+		return -EINVAL;
+	}
 	return 0;
 }
 
@@ -2750,6 +2850,9 @@ static int validate_code(struct jit_ctx *ctx)
 			return -1;
 	}
 
+	if (WARN_ON_ONCE(ctx->exentry_idx != ctx->prog->aux->num_exentries))
+		return -1;
+
 	return 0;
 }
 
@@ -2771,13 +2874,13 @@ if (bpf_jit_enable > 1) \
 
 struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 {
+	unsigned int image_size, prog_size, extable_size;
 	struct bpf_prog *tmp, *orig_prog = prog;
 	struct bpf_binary_header *header;
 	struct arm32_jit_data *jit_data;
 	bool tmp_blinded = false;
 	bool extra_pass = false;
 	struct jit_ctx ctx;
-	unsigned int image_size;
 	u8 *image_ptr;
 
 	/* If BPF JIT was not enabled then we must fall back to
@@ -2812,7 +2915,7 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 		ctx = jit_data->ctx;
 		image_ptr = jit_data->image;
 		header = jit_data->header;
-		image_size = sizeof(u32) * ctx.idx;
+		prog_size = sizeof(u32) * ctx.idx;
 		extra_pass = true;
 		goto skip_init_ctx;
 	}
@@ -2863,15 +2966,20 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 		}
 	}
 #endif
-	/* Now we can get the actual image size of the JITed arm code.
-	 * Currently, we are not considering the THUMB-2 instructions
-	 * for jit, although it can decrease the size of the image.
-	 *
-	 * As each arm instruction is of length 32bit, we are translating
-	 * number of JITed instructions into the size required to store these
-	 * JITed code.
+	/* Now we determine sizes of the JITed ARM code and any literal
+	 * pool, and the exception table if needed. ARM insns are always
+	 * 32-bit since the JIT doesn't support THUMB-2.
 	 */
-	image_size = sizeof(u32) * ctx.idx;
+	prog_size = sizeof(u32) * ctx.idx;
+
+	/* Handle multiple JITed insns output per BPF_PROBE_xxx insn. */
+	if (ctx.exentry_idx > prog->aux->num_exentries)
+		prog->aux->num_exentries = ctx.exentry_idx;
+
+	extable_size = prog->aux->num_exentries *
+		sizeof(struct exception_table_entry);
+
+	image_size = prog_size + extable_size;
 
 	/* Now we know the size of the structure to make */
 	header = bpf_jit_binary_alloc(image_size, &image_ptr,
@@ -2889,8 +2997,11 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 	 * pass to finalize JMP offsets if using bpf2bpf calls.
 	 */
 	ctx.target = (u32 *) image_ptr;
+	if (extable_size)
+		prog->aux->extable = (void *)image_ptr + prog_size;
 skip_init_ctx:
 	ctx.idx = 0;
+	ctx.exentry_idx = 0;
 
 	build_prologue(&ctx);
 
@@ -2911,7 +3022,7 @@ skip_init_ctx:
 
 	if (bpf_jit_enable > 1)
 		/* there are 2 passes here */
-		bpf_jit_dump(prog->len, image_size, 2, ctx.target);
+		bpf_jit_dump(prog->len, prog_size, 2, ctx.target);
 
 	if (!prog->is_func || extra_pass) {
 		if (extra_pass && ctx.idx != jit_data->ctx.idx) {
@@ -2931,7 +3042,7 @@ skip_init_ctx:
 	}
 	prog->bpf_func = (void *)ctx.target;
 	prog->jited = 1;
-	prog->jited_len = image_size;
+	prog->jited_len = prog_size;
 
 	DEBUG_PASS(3);
 
