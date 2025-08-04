@@ -26,40 +26,44 @@
  *
  *   TLD_FREE_DATA_ON_THREAD_EXIT - Frees memory on thread exit automatically
  *
- *   Thread-specific memory for storing TLD is allocated lazily on the first call to
- *   tld_get_data(). The thread that calls it must also call tld_free() on thread exit
- *   to prevent memory leak. Pthread will be included if the option is defined. A pthread
- *   key will be registered with a destructor that calls tld_free().
+ *   Thread-specific memory for storing TLD is allocated lazily on the first
+ *   call to tld_get_data(). The thread that calls it must also call
+ *   tld_free() on thread exit to prevent memory leak. Pthread will be
+ *   included if the option is defined. A pthread key will be registered with
+ *   a destructor that calls tld_free().
  *
  *
- *   TLD_DYN_DATA_SIZE - The maximum size of memory allocated for TLDs created dynamically
- *   (default: 64 bytes)
+ *   TLD_DYN_DATA_SIZE - The maximum size of memory allocated for TLDs created
+ *   dynamically (default: 64 bytes)
  *
- *   A TLD can be defined statically using TLD_DEFINE_KEY() or created on the fly using
- *   tld_create_key(). As the total size of TLDs created with tld_create_key() cannot be
- *   possibly known statically, a memory area of size TLD_DYN_DATA_SIZE will be allocated
- *   for these TLDs. This additional memory is allocated for every thread that calls
- *   tld_get_data() even if no tld_create_key are actually called, so be mindful of
- *   potential memory wastage. Use TLD_DEFINE_KEY() whenever possible as just enough memory
+ *   A TLD can be defined statically using TLD_DEFINE_KEY() or created on the
+ *   fly using tld_create_key(). As the total size of TLDs created with
+ *   tld_create_key() cannot be possibly known statically, a memory area of
+ *   size TLD_DYN_DATA_SIZE will be allocated for these TLDs. This additional
+ *   memory is allocated for every thread that calls tld_get_data() even if no
+ *   tld_create_key are actually called, so be mindful of potential memory
+ *   wastage. Use TLD_DEFINE_KEY() whenever possible as just enough memory
  *   will be allocated for TLDs created with it.
  *
  *
  *   TLD_NAME_LEN - The maximum length of the name of a TLD (default: 62)
  *
- *   Setting TLD_NAME_LEN will affect the maximum number of TLDs a process can store,
- *   TLD_MAX_DATA_CNT.
+ *   Setting TLD_NAME_LEN will affect the maximum number of TLDs a process can
+ *   store, TLD_MAX_DATA_CNT.
  *
  *
- *   TLD_DATA_USE_ALIGNED_ALLOC - Always use aligned_alloc() instead of malloc()
+ *   TLD_DATA_USE_ALIGNED_ALLOC - Always use aligned_alloc() over malloc()
  *
- *   When allocating the memory for storing TLDs, we need to make sure there is a memory
- *   region of the X bytes within a page. This is due to the limit posed by UPTR: memory
- *   pinned to the kernel cannot exceed a page nor can it cross the page boundary. The
- *   library normally calls malloc(2*X) given X bytes of total TLDs, and only uses
- *   aligned_alloc(PAGE_SIZE, X) when X >= PAGE_SIZE / 2. This is to reduce memory wastage
- *   as not all memory allocator can use the exact amount of memory requested to fulfill
- *   aligned_alloc(). For example, some may round the size up to the alignment. Enable the
- *   option to always use aligned_alloc() if the implementation has low memory overhead.
+ *   When allocating the memory for storing TLDs, we need to make sure there
+ *   is a memory region of the X bytes within a page. This is due to the limit
+ *   posed by UPTR: memory pinned to the kernel cannot exceed a page nor can
+ *   it cross the page boundary. The library normally calls malloc(2*X) given
+ *   X bytes of total TLDs, and only uses aligned_alloc(PAGE_SIZE, X) when
+ *   X >= PAGE_SIZE / 2. This is to reduce memory wastage as not all memory
+ *   allocator can use the exact amount of memory requested to fulfill
+ *   aligned_alloc(). For example, some may round the size up to the
+ *   alignment. Enable the option to always use aligned_alloc() if the
+ *   implementation has low memory overhead.
  */
 
 #define TLD_PAGE_SIZE getpagesize()
@@ -105,8 +109,8 @@ struct tld_data_u {
 };
 
 struct tld_map_value {
-	void *data;
-	struct tld_meta_u *meta;
+	__bpf_md_ptr(void *, data);
+	__bpf_md_ptr(struct tld_meta_u *, meta);
 };
 
 struct tld_meta_u * _Atomic tld_meta_p __attribute__((weak));
@@ -181,9 +185,9 @@ static int __tld_init_data_p(int map_fd)
 	}
 
 	/*
-	 * Always pass a page-aligned address to UPTR since the size of tld_map_value::data
-	 * is a page in BTF. If data_alloc spans across two pages, use the page that contains large
-	 * enough memory.
+	 * Always pass a page-aligned address to UPTR since the size of
+	 * tld_map_value::data is a page in BTF. If data_alloc spans across
+	 * two pages, use the page that contains large enough memory.
 	 */
 	if (TLD_PAGE_SIZE - (~TLD_PAGE_MASK & (intptr_t)data_alloc) >= tld_meta_p->size) {
 		map_val.data = (void *)(TLD_PAGE_MASK & (intptr_t)data_alloc);
@@ -229,7 +233,10 @@ static tld_key_t __tld_create_key(const char *name, size_t size, bool dyn_data)
 retry:
 		cnt = atomic_load(&tld_meta_p->cnt);
 		if (i < cnt) {
-			/* A metadata is not ready until size is updated with a non-zero value */
+			/*
+			 * A metadata is not ready until size is updated with
+			 * a non-zero value.
+			 */
 			while (!(sz = atomic_load(&tld_meta_p->metadata[i].size)))
 				sched_yield();
 
@@ -241,8 +248,8 @@ retry:
 		}
 
 		/*
-		 * TLD_DEFINE_KEY() is given memory upto a page while at most
-		 * TLD_DYN_DATA_SIZE is allocated for tld_create_key()
+		 * TLD_DEFINE_KEY() is given memory up to a page while at most
+		 * TLD_DYN_DATA_SIZE is allocated for tld_create_key().
 		 */
 		if (dyn_data) {
 			if (off + TLD_ROUND_UP(size, 8) > tld_meta_p->size)
@@ -254,10 +261,11 @@ retry:
 		}
 
 		/*
-		 * Only one tld_create_key() can increase the current cnt by one and
-		 * takes the latest available slot. Other threads will check again if a new
-		 * TLD can still be added, and then compete for the new slot after the
-		 * succeeding thread update the size.
+		 * Only one tld_create_key() can increase the current cnt by
+		 * one and takes the latest available slot. Other threads will
+		 * check again if a new TLD can still be added, and then
+		 * compete for the new slot after the succeeding thread update
+		 * the size.
 		 */
 		if (!atomic_compare_exchange_strong(&tld_meta_p->cnt, &cnt, cnt + 1))
 			goto retry;
@@ -271,7 +279,8 @@ retry:
 }
 
 /**
- * TLD_DEFINE_KEY() - Define a TLD and a global variable key associated with the TLD.
+ * TLD_DEFINE_KEY() - Define a TLD and a global variable key associated with
+ * the TLD.
  *
  * @name: The name of the TLD
  * @size: The size of the TLD
@@ -279,13 +288,15 @@ retry:
  *
  * The macro can only be used in file scope.
  *
- * A global variable key of opaque type, tld_key_t, will be declared and initialized before
- * main() starts. Use tld_key_is_err() or tld_key_err_or_zero() later to check if the key
- * creation succeeded. Pass the key to tld_get_data() to get a pointer to the TLD.
- * bpf programs can also fetch the same key by name.
+ * A global variable key of opaque type, tld_key_t, will be declared and
+ * initialized before main() starts. Later use tld_key_is_err() or
+ * tld_key_err_or_zero() to check if the key creation succeeded. Pass the key
+ * to tld_get_data() to get a pointer to the TLD. BPF programs can also fetch
+ * the same key by name.
  *
- * The total size of TLDs created using TLD_DEFINE_KEY() cannot exceed a page. Just
- * enough memory will be allocated for each thread on the first call to tld_get_data().
+ * The total size of TLDs created using TLD_DEFINE_KEY() cannot exceed a page.
+ * Just enough memory will be allocated for each thread on the first call to
+ * tld_get_data().
  */
 #define TLD_DEFINE_KEY(key, name, size)			\
 tld_key_t key;						\
@@ -302,17 +313,19 @@ void __tld_define_key_##key(void)			\
  * @name: The name the TLD
  * @size: The size of the TLD
  *
- * Return an opaque object key. Use tld_key_is_err() or tld_key_err_or_zero() to check
- * if the key creation succeeded. Pass the key to tld_get_data() to get a pointer to
- * locate the TLD. bpf programs can also fetch the same key by name.
+ * Return an opaque object key. Use tld_key_is_err() or tld_key_err_or_zero()
+ * to check if the key creation succeeded. Pass the key to tld_get_data() to
+ * get a pointer to locate the TLD. BPF programs can also fetch the same key
+ * by name.
  *
- * Use tld_create_key() only when a TLD needs to be created dynamically (e.g., @name is
- * not known statically or a TLD needs to be created conditionally)
+ * Use tld_create_key() only when a TLD needs to be created dynamically (e.g.
+ * @name is not known statically or a TLD needs to be created conditionally).
  *
- * An additional TLD_DYN_DATA_SIZE bytes are allocated per-thread to accommodate TLDs
- * created dynamically with tld_create_key(). Since only a user page is pinned to the
- * kernel, when TLDs created with TLD_DEFINE_KEY() uses more than TLD_PAGE_SIZE -
- * TLD_DYN_DATA_SIZE, the buffer size will be limited to the rest of the page.
+ * An additional TLD_DYN_DATA_SIZE bytes are allocated per-thread to
+ * accommodate TLDs created dynamically with tld_create_key(). Since only a
+ * user page is pinned to the kernel, when TLDs created with TLD_DEFINE_KEY()
+ * use more than TLD_PAGE_SIZE - TLD_DYN_DATA_SIZE, the buffer size will be
+ * limited to the rest of the page.
  */
 __attribute__((unused))
 static tld_key_t tld_create_key(const char *name, size_t size)
@@ -333,16 +346,16 @@ static inline int tld_key_err_or_zero(tld_key_t key)
 }
 
 /**
- * tld_get_data() - Get a pointer to the TLD associated with the given key of the
- * calling thread.
+ * tld_get_data() - Get a pointer to the TLD associated with the given key of
+ * the calling thread.
  *
- * @map_fd: A file descriptor of tld_data_map, the underlying BPF task local storage map
- * of task local data.
+ * @map_fd: A file descriptor of tld_data_map, the underlying BPF task local
+ * storage map of task local data.
  * @key: A key object created by TLD_DEFINE_KEY() or tld_create_key().
  *
- * Return a pointer to the TLD if the key is valid; NULL if not enough memory for TLD
- * for this thread, or the key is invalid. The returned pointer is guaranteed to be 8-byte
- * aligned.
+ * Return a pointer to the TLD if the key is valid; NULL if not enough memory
+ * for TLD for this thread, or the key is invalid. The returned pointer is
+ * guaranteed to be 8-byte aligned.
  *
  * Threads that call tld_get_data() must call tld_free() on exit to prevent
  * memory leak if TLD_FREE_DATA_ON_THREAD_EXIT is not defined.
@@ -363,11 +376,12 @@ static void *tld_get_data(int map_fd, tld_key_t key)
 /**
  * tld_free() - Free task local data memory of the calling thread
  *
- * For the calling thread, all pointers to TLDs acquired before will become invalid.
+ * For the calling thread, all pointers to TLDs acquired before will become
+ * invalid.
  *
- * Users must call tld_free() on thread exit to prevent memory leak. Alternatively,
- * define TLD_FREE_DATA_ON_THREAD_EXIT and a thread exit handler will be registered
- * to free the memory automatically.
+ * Users must call tld_free() on thread exit to prevent memory leak.
+ * Alternatively, define TLD_FREE_DATA_ON_THREAD_EXIT and a thread exit
+ * handler will be registered to free the memory automatically.
  */
 __attribute__((unused))
 static void tld_free(void)

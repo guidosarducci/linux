@@ -52,15 +52,15 @@ void *test_task_local_data_basic_thread(void *arg)
 	fd = bpf_map__fd(skel->maps.tld_data_map);
 
 	value0 = tld_get_data(fd, value0_key);
-	if (!ASSERT_OK_PTR(value0, "tld_get_data"))
+	if (!ASSERT_OK_PTR(value0, "tld_get_data_value0"))
 		goto out;
 
 	value1 = tld_get_data(fd, tld_keys[1]);
-	if (!ASSERT_OK_PTR(value1, "tld_get_data"))
+	if (!ASSERT_OK_PTR(value1, "tld_get_data_value1"))
 		goto out;
 
 	value2 = tld_get_data(fd, tld_keys[2]);
-	if (!ASSERT_OK_PTR(value2, "tld_get_data"))
+	if (!ASSERT_OK_PTR(value2, "tld_get_data_value2"))
 		goto out;
 
 	tid = sys_gettid();
@@ -270,7 +270,7 @@ static void test_task_local_data_race(void)
 		/* Read TLDs and check the value to see if any address collides with another */
 		for (i = 0; i < TLD_MAX_DATA_CNT; i++) {
 			data = tld_get_data(fd, tld_keys[i]);
-			if (CHECK_FAIL(*data != i))
+			if (CHECK_FAIL(!data || *data != i))
 				break;
 		}
 

@@ -28,8 +28,8 @@
  * initialized or returned. It can be used to get a pointer to the TLD in the
  * user space by calling tld_get_data().
  *
- * In a bpf program, tld_object_init() first needs to be called to initialized a
- * tld_object on the stack. Then, TLDs can be accessed by calling tld_get_data().
+ * In a bpf program, tld_object_init() first needs to be called to initialize a
+ * tld_object on the stack. TLDs can then be accessed by calling tld_get_data().
  * The API will try to fetch the key by the name and use it to locate the data.
  * A pointer to the TLD will be returned. It also caches the key in a task local
  * storage map, tld_key_map, whose value type, struct tld_keys, must be defined
@@ -113,7 +113,7 @@ struct tld_object {
 
 /*
  * Map value of tld_key_map for caching keys. Must be defined by the developer.
- * Members should be tld_key_t and passed to the 3rd argument of tld_fetch_key().
+ * Members should be tld_key_t and passed as 3rd argument of tld_fetch_key().
  */
 struct tld_keys;
 
@@ -137,9 +137,9 @@ struct {
  * @task: The task_struct of the target task
  * @tld_obj: A pointer to a tld_object to be initialized
  *
- * Return 0 on success; -ENODATA if the user space did not initialize task local data
- * for the current task through tld_get_data(); -ENOMEM if the creation of tld_key_map
- * fails
+ * Return 0 on success; -ENODATA if the user space did not initialize task
+ * local data for the current task through tld_get_data(); -ENOMEM if the
+ * creation of tld_key_map fails.
  */
 __attribute__((unused))
 static int tld_object_init(struct task_struct *task, struct tld_object *tld_obj)
@@ -163,9 +163,10 @@ static int tld_object_init(struct task_struct *task, struct tld_object *tld_obj)
 }
 
 /*
- * Return the offset of TLD if @name is found. Otherwise, return the current TLD count
- * using the nonpositive range so that the next tld_get_data() can skip fetching key if
- * no new TLD is added or start comparing name from the first newly added TLD.
+ * Return the offset of TLD if @name is found. Otherwise, return the current
+ * TLD count using the nonpositive range so that the next tld_get_data() can
+ * skip fetching key if no new TLD is added or start comparing name from the
+ * first newly added TLD.
  */
 __attribute__((unused))
 static int __tld_fetch_key(struct tld_object *tld_obj, const char *name, int i_start)
@@ -201,37 +202,42 @@ static int __tld_fetch_key(struct tld_object *tld_obj, const char *name, int i_s
  * @name: The name of the key associated with a TLD
  * @size: The size of the TLD. Must be a known constant value
  *
- * Return a pointer to the TLD associated with @name; NULL if not found or @size is too
- * big. @key is used to cache the key if the TLD is found to speed up subsequent calls.
- * It should be defined as an member of tld_keys of tld_key_t type by the developer.
+ * Return a pointer to the TLD associated with @name; NULL if not found or
+ * @size is too big. @key is used to cache the key if the TLD is found to
+ * speed up subsequent calls.  It should be defined as an member of tld_keys
+ * of tld_key_t type by the developer.
  */
-#define tld_get_data(tld_obj, key, name, size)						\
-	({										\
-		void *data = NULL, *_data = (tld_obj)->data_map->data;			\
-		long off = (tld_obj)->key_map->key.off;					\
-		int cnt;								\
-											\
-		if (likely(_data)) {							\
-			if (likely(off > 0)) {						\
-				barrier_var(off);					\
-				if (likely(off < __PAGE_SIZE - size))			\
-					data = _data + off;				\
-			} else {							\
-				cnt = -(off);						\
-				if (likely((tld_obj)->data_map->meta) &&		\
-				    cnt < (tld_obj)->data_map->meta->cnt) {		\
-					off = __tld_fetch_key(tld_obj, name, cnt);	\
-					(tld_obj)->key_map->key.off = off;		\
-											\
-					if (likely(off < __PAGE_SIZE - size)) {		\
-						barrier_var(off);			\
-						if (off > 0)				\
-							data = _data + off;		\
-					}						\
-				}							\
-			}								\
-		}									\
-		data;									\
+	#define tld_get_data(tld_obj, key, name, size)			       \
+	({								       \
+		__label__ out;						       \
+		void *data = NULL, *_data = (tld_obj)->data_map->data;	       \
+		long off = (tld_obj)->key_map->key.off;			       \
+		int cnt;						       \
+									       \
+		if (unlikely(!_data))					       \
+			goto out;					       \
+									       \
+		if (unlikely(off <= 0)) {				       \
+			barrier_var(off);				       \
+			if (likely(off < __PAGE_SIZE - size))		       \
+				data = _data + off;			       \
+			goto out;					       \
+		}							       \
+									       \
+		cnt = -(off);						       \
+		if (likely((tld_obj)->data_map->meta) &&		       \
+		    cnt < (tld_obj)->data_map->meta->cnt) {		       \
+			off = __tld_fetch_key(tld_obj, name, cnt);	       \
+			(tld_obj)->key_map->key.off = off;		       \
+									       \
+			if (likely(off < __PAGE_SIZE - size)) {		       \
+				barrier_var(off);			       \
+				if (off > 0)				       \
+					data = _data + off;		       \
+			}						       \
+		}							       \
+		out:							       \
+		data;							       \
 	})
 
 #endif
