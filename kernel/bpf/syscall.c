@@ -228,12 +228,6 @@ static int bpf_obj_pin_uptrs(struct btf_record *rec, void *obj)
 		if (err != 1)
 			goto unpin_all;
 
-		if (PageHighMem(page)) {
-			err = -EOPNOTSUPP;
-			unpin_user_page(page);
-			goto unpin_all;
-		}
-
 		*uptr_addr = page_address(page) + offset_in_page(start);
 	}
 
