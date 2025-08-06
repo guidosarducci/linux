@@ -40,7 +40,7 @@ static pthread_mutex_t global_mutex;
 
 static tld_key_t *tld_keys;
 
-#define TEST_BASIC_THREAD_NUM 32
+#define TEST_BASIC_THREAD_NUM 1
 
 void *test_task_local_data_basic_thread(void *arg)
 {

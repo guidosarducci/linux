@@ -30,14 +30,43 @@ int task_main(void *ctx)
 	struct tld_object tld_obj;
 	struct test_tld_struct *struct_p;
 	struct task_struct *task;
-	int err, *int_p;
+	int err, *int_p = NULL;
 
 	task = bpf_get_current_task_btf();
 	err = tld_object_init(task, &tld_obj);
 	if (err)
 		return 1;
 
-	int_p = tld_get_data(&tld_obj, value0, "value0", sizeof(int));
+//	int_p = tld_get_data(&tld_obj, value0, "value0", sizeof(int));
+{
+	void *_data = (&tld_obj)->data_map->data;
+	long off = (&tld_obj)->key_map->value0.off;
+	int cnt;
+
+	if (unlikely(!_data))
+		goto out;
+
+	if (unlikely(off <= 0)) {
+		barrier_var(off);
+		if (likely(off < __PAGE_SIZE - sizeof(int)))
+			int_p = _data + off;
+		goto out;
+	}
+
+	cnt = -(off);
+	if (likely((&tld_obj)->data_map->meta) &&
+	    cnt < (&tld_obj)->data_map->meta->cnt) {
+		off = __tld_fetch_key(&tld_obj, "value0", cnt);
+		(&tld_obj)->key_map->value0.off = off;
+
+		if (likely(off < __PAGE_SIZE - sizeof(int))) {
+			barrier_var(off);
+			if (off > 0)
+				int_p = _data + off;
+		}
+	}
+}
+out:
 	if (int_p)
 		test_value0 = *int_p;
 	else
