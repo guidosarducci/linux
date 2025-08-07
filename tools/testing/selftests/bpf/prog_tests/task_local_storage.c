@@ -352,8 +352,8 @@ static void test_uptr_basic(void)
 	err = bpf_map_lookup_elem(map_fd, &parent_task_fd, &value);
 	if (!ASSERT_OK(err, "bpf_map_lookup_elem"))
 		goto out;
-	ASSERT_EQ(value.udata, NULL, "value.udata");
-	ASSERT_EQ(value.nested.udata, NULL, "value.nested.udata");
+	ASSERT_NULL(value.udata, "value.udata");
+	ASSERT_NULL(value.nested.udata, "value.nested.udata");
 
 	/* delete_elem */
 	err = bpf_map_delete_elem(map_fd, &parent_task_fd);
