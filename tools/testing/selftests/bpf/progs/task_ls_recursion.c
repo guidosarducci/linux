@@ -27,7 +27,7 @@ struct {
 	__type(value, long);
 } map_b SEC(".maps");
 
-SEC("fentry/bpf_local_storage_update")
+SEC("kprobe/bpf_local_storage_update")
 int BPF_PROG(on_update)
 {
 	struct task_struct *task = bpf_get_current_task_btf();

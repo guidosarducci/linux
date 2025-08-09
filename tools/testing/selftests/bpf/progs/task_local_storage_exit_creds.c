@@ -18,7 +18,7 @@ int run_count = 0;
 int valid_ptr_count = 0;
 int null_ptr_count = 0;
 
-SEC("fentry/exit_creds")
+SEC("kprobe/exit_creds")
 int BPF_PROG(trace_exit_creds, struct task_struct *task)
 {
 	__u64 *ptr;
