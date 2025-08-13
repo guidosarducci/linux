@@ -58,6 +58,9 @@ PCAP_LIBS	:= $(shell $(PKG_CONFIG) --libs libpcap 2>/dev/null)
 LDLIBS += $(PCAP_LIBS)
 CFLAGS += $(PCAP_CFLAGS)
 
+# Avoid uprobe and perf event issues with THUMB userspace binaries
+CFLAGS += $(if $(filter arm, $(SRCARCH)),-marm)
+
 # Some utility functions use LLVM libraries
 jit_disasm_helpers.c-CFLAGS = $(LLVM_CFLAGS)
 
@@ -899,6 +902,16 @@ $(OUTPUT)/uprobe_multi: uprobe_multi.c uprobe_multi.ld
 	$(call msg,BINARY,,$@)
 	$(Q)$(CC) $(CFLAGS) -Wl,-T,uprobe_multi.ld -O0 $(LDFLAGS) 	\
 		$(filter-out %.ld,$^) $(LDLIBS) -o $@
+
+# Avoid THUMB insns in uprobe or perf testing since not supported
+$(OUTPUT)/attach_probe.test.o						\
+$(OUTPUT)/bpf_cookie.test.o						\
+$(OUTPUT)/fill_link_info.test.o						\
+$(OUTPUT)/perf_skip.test.o						\
+$(OUTPUT)/task_pt_regs.test.o						\
+$(OUTPUT)/uprobe_autoattach.test.o					\
+$(OUTPUT)/usdt.test.o							\
+$(OUTPUT)/uprobe_multi:	CFLAGS += $(if $(filter arm, $(ARCH)),-marm)
 
 EXTRA_CLEAN := $(SCRATCH_DIR) $(HOST_SCRATCH_DIR)			\
 	prog_tests/tests.h map_tests/tests.h verifier/tests.h		\
