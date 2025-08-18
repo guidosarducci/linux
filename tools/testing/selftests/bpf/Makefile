@@ -458,7 +458,7 @@ BPF_CFLAGS = -g -Wall -Werror -D__TARGET_ARCH_$(SRCARCH) $(MENDIAN)	\
 	     -fno-strict-aliasing 					\
 	     -Wno-compare-distinct-pointer-types			\
 	     -Wno-initializer-overrides					\
-	     #
+	     $(if $(filter arm, $(ARCH)),-Wno-int-to-pointer-cast)
 # TODO: enable me -Wsign-compare
 
 CLANG_CFLAGS = $(CLANG_SYS_INCLUDES)
