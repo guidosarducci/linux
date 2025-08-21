@@ -35,6 +35,7 @@
 #define TEST_TAG_AUXILIARY_UNPRIV "comment:test_auxiliary_unpriv"
 #define TEST_BTF_PATH "comment:test_btf_path="
 #define TEST_TAG_ARCH "comment:test_arch="
+#define TEST_TAG_WORD_SIZE "comment:test_word_size="
 #define TEST_TAG_JITED_PFX "comment:test_jited="
 #define TEST_TAG_JITED_PFX_UNPRIV "comment:test_jited_unpriv="
 #define TEST_TAG_CAPS_UNPRIV "comment:test_caps_unpriv="
@@ -89,6 +90,7 @@ struct test_spec {
 	int prog_flags;
 	int mode_mask;
 	int arch_mask;
+	int word_size;
 	int load_mask;
 	int linear_sz;
 	bool auxiliary;
@@ -417,6 +419,7 @@ static int parse_test_spec(struct test_loader *tester,
 	bool collect_jit = false;
 	int func_id, i, err = 0;
 	u32 arch_mask = 0;
+	u32 word_size = 0;
 	u32 load_mask = 0;
 	struct btf *btf;
 	enum arch arch;
@@ -596,6 +599,17 @@ static int parse_test_spec(struct test_loader *tester,
 			collect_jit = get_current_arch() == arch;
 			unpriv_jit_on_next_line = true;
 			jit_on_next_line = true;
+		} else if (str_has_pfx(s, TEST_TAG_WORD_SIZE)) {
+			val = s + sizeof(TEST_TAG_WORD_SIZE) - 1;
+			if (strcmp(val, "64") == 0) {
+				word_size = 8;
+			} else if (strcmp(val, "32") == 0) {
+				word_size = 4;
+			} else {
+				PRINT_FAIL("bad word-size spec: '%s'", val);
+				err = -EINVAL;
+				goto cleanup;
+			}
 		} else if (str_has_pfx(s, TEST_BTF_PATH)) {
 			spec->btf_custom_path = s + sizeof(TEST_BTF_PATH) - 1;
 		} else if (str_has_pfx(s, TEST_TAG_CAPS_UNPRIV)) {
@@ -655,6 +669,7 @@ static int parse_test_spec(struct test_loader *tester,
 
 	spec->arch_mask = arch_mask ?: -1;
 	spec->load_mask = load_mask ?: (JITED | NO_JITED);
+	spec->word_size = word_size;
 
 	if (spec->mode_mask == 0)
 		spec->mode_mask = PRIV;
@@ -1152,6 +1167,11 @@ void run_subtest(struct test_loader *tester,
 		return;
 
 	if ((get_current_arch() & spec->arch_mask) == 0) {
+		test__skip();
+		return;
+	}
+
+	if (spec->word_size && spec->word_size != sizeof(long)) {
 		test__skip();
 		return;
 	}
