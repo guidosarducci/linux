@@ -2,8 +2,8 @@
 /* Copyright (c) 2023 Meta Platforms, Inc. and affiliates. */
 
 #include "vmlinux.h"
-#include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
+#include <bpf/bpf_core_read.h>
 
 #if (defined(__TARGET_ARCH_arm64) || defined(__TARGET_ARCH_arm) ||	\
      (defined(__TARGET_ARCH_riscv) && __riscv_xlen == 64) ||		\
@@ -54,11 +54,11 @@ struct bpf_testmod_struct_arg_1 {
 
 long long int_member;
 
-SEC("?fentry/bpf_testmod_test_arg_ptr_to_struct")
-int BPF_PROG2(test_ptr_struct_arg, struct bpf_testmod_struct_arg_1 *, p)
+SEC("?kprobe/bpf_testmod_test_arg_ptr_to_struct")
+int BPF_KPROBE(test_ptr_struct_arg, struct bpf_testmod_struct_arg_1 *p)
 {
 	/* probed memory access */
-	int_member = p->a;
+	int_member = BPF_CORE_READ(p, a);
         return 0;
 }
 
