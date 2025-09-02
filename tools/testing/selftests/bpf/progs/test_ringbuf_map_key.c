@@ -31,7 +31,7 @@ int pid = 0;
 /* inner state */
 long long seq = 0;
 
-SEC("fentry/" SYS_PREFIX "sys_getpgid")
+SEC("tp/syscalls/sys_enter_getpgid")
 int test_ringbuf_mem_map_key(void *ctx)
 {
 	int cur_pid = bpf_get_current_pid_tgid() >> 32;

@@ -158,7 +158,7 @@ publish_kern_messages(void)
 	bpf_loop(8, publish_next_kern_msg, NULL, 0);
 }
 
-SEC("fentry/" SYS_PREFIX "sys_prctl")
+SEC("tp/syscalls/sys_enter_prctl")
 int test_user_ringbuf_protocol(void *ctx)
 {
 	long status = 0;
@@ -178,7 +178,7 @@ int test_user_ringbuf_protocol(void *ctx)
 	return 0;
 }
 
-SEC("fentry/" SYS_PREFIX "sys_getpgid")
+SEC("tp/syscalls/sys_enter_getpgid")
 int test_user_ringbuf(void *ctx)
 {
 	if (!is_test_process())
@@ -196,7 +196,7 @@ do_nothing_cb(struct bpf_dynptr *dynptr, void *context)
 	return 0;
 }
 
-SEC("fentry/" SYS_PREFIX "sys_prlimit64")
+SEC("tp/syscalls/sys_enter_prlimit64")
 int test_user_ringbuf_epoll(void *ctx)
 {
 	long num_samples;

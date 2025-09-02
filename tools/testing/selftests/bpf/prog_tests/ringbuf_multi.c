@@ -123,7 +123,7 @@ void test_ringbuf_multi(void)
 	syscall(__NR_getpgid);
 
 	/* poll for samples, should get 2 ringbufs back */
-	err = ring_buffer__poll(ringbuf, -1);
+	err = ring_buffer__poll(ringbuf, 1000);
 	if (CHECK(err != 2, "poll_res", "expected 2 records, got %d\n", err))
 		goto cleanup;
 

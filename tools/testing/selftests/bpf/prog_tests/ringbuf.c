@@ -50,12 +50,12 @@ static int process_sample(void *ctx, void *data, size_t len)
 
 	switch (s->seq) {
 	case 0:
-		CHECK(s->value != 333, "sample1_value", "exp %ld, got %ld\n",
-		      333L, s->value);
+		CHECK(s->value != 333, "sample1_value", "exp %lld, got %lld\n",
+		      333LL, s->value);
 		return 0;
 	case 1:
-		CHECK(s->value != 777, "sample2_value", "exp %ld, got %ld\n",
-		      777L, s->value);
+		CHECK(s->value != 777, "sample2_value", "exp %lld, got %lld\n",
+		      777LL, s->value);
 		return -EDONE;
 	default:
 		/* we don't care about the rest */
@@ -255,7 +255,7 @@ static void ringbuf_subtest(void)
 	ASSERT_EQ(prod_pos, 3 * rec_sz, "ring_prod_pos");
 
 	/* poll for samples */
-	err = ring_buffer__poll(ringbuf, -1);
+	err = ring_buffer__poll(ringbuf, 1000);
 
 	/* -EDONE is used as an indicator that we are done */
 	if (CHECK(err != -EDONE, "err_done", "done err: %d\n", err))
@@ -489,7 +489,7 @@ static void ringbuf_map_key_subtest(void)
 
 	syscall(__NR_getpgid);
 	ASSERT_EQ(skel_map_key->bss->seq, 1, "skel_map_key->bss->seq");
-	err = ring_buffer__poll(ringbuf, -1);
+	err = ring_buffer__poll(ringbuf, 1000);
 	ASSERT_EQ(err, -EDONE, "ring_buffer__poll");
 
 cleanup_ringbuf:
