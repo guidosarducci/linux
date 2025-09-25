@@ -2,7 +2,6 @@
 /* Copyright (c) 2025 Meta Platforms, Inc. and affiliates. */
 
 #include <vmlinux.h>
-#include <string.h>
 #include <stdbool.h>
 #include <bpf/bpf_tracing.h>
 #include "bpf_misc.h"
@@ -10,7 +9,6 @@
 char _license[] SEC("license") = "GPL";
 
 int err;
-void *user_ptr;
 
 SEC("lsm/file_open")
 __failure

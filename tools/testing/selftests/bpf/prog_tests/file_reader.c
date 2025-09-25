@@ -8,7 +8,6 @@
 #include <dlfcn.h>
 #include <sys/mman.h>
 
-const char *user_ptr = "hello world";
 char file_contents[256000];
 
 void *get_executable_base_addr(void)
