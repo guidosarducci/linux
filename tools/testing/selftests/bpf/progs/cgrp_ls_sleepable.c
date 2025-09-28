@@ -11,7 +11,7 @@ struct {
 	__uint(type, BPF_MAP_TYPE_CGRP_STORAGE);
 	__uint(map_flags, BPF_F_NO_PREALLOC);
 	__type(key, int);
-	__type(value, long);
+	__type(value, __s64);
 } map_a SEC(".maps");
 
 __s32 target_pid;

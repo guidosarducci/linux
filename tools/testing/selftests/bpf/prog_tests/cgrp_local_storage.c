@@ -37,7 +37,7 @@ static void cgroup_mode_value_init(bool cgroup, int hid)
 static void test_tp_btf(int cgroup_fd)
 {
 	struct cgrp_ls_tp_btf *skel;
-	long val1 = 1, val2 = 0;
+	__s64 val1 = 1, val2 = 0;
 	int err;
 
 	skel = cgrp_ls_tp_btf__open_and_load();
@@ -310,7 +310,8 @@ static void cgrp2_local_storage(void)
 
 static void cgrp1_local_storage(void)
 {
-	int cgrp1_fd, cgrp1_hid, cgrp1_id, err;
+	__u64 cgrp1_id;
+	int cgrp1_fd, cgrp1_hid, err;
 
 	/* Setup cgroup1 hierarchy */
 	err = setup_classid_environment();
