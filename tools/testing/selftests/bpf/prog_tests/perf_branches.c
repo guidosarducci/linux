@@ -122,7 +122,7 @@ static void test_perf_branches_hw(void)
 	attr.type = PERF_TYPE_HARDWARE;
 	attr.config = PERF_COUNT_HW_CPU_CYCLES;
 	attr.freq = 1;
-	attr.sample_freq = 1000;
+	attr.sample_freq = 100;
 	attr.sample_type = PERF_SAMPLE_BRANCH_STACK;
 	attr.branch_sample_type = PERF_SAMPLE_BRANCH_USER | PERF_SAMPLE_BRANCH_ANY;
 	pfd = syscall(__NR_perf_event_open, &attr, -1, 0, -1, PERF_FLAG_FD_CLOEXEC);
@@ -163,7 +163,7 @@ static void test_perf_branches_no_hw(void)
 	attr.type = PERF_TYPE_SOFTWARE;
 	attr.config = PERF_COUNT_SW_CPU_CLOCK;
 	attr.freq = 1;
-	attr.sample_freq = 1000;
+	attr.sample_freq = 100;
 	pfd = syscall(__NR_perf_event_open, &attr, -1, 0, -1, PERF_FLAG_FD_CLOEXEC);
 	if (CHECK(pfd < 0, "perf_event_open", "err %d\n", pfd))
 		return;

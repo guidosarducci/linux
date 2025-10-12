@@ -32,7 +32,7 @@ static int open_pe(void)
 	attr.type = PERF_TYPE_SOFTWARE;
 	attr.config = PERF_COUNT_SW_CPU_CLOCK;
 	attr.freq = 1;
-	attr.sample_freq = 1000;
+	attr.sample_freq = 100;
 	pfd = syscall(__NR_perf_event_open, &attr, 0, -1, -1, PERF_FLAG_FD_CLOEXEC);
 
 	return pfd >= 0 ? pfd : -errno;

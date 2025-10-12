@@ -223,7 +223,7 @@ static void test_send_signal_perf(bool signal_thread, bool remote)
 {
 	struct perf_event_attr attr = {
 		.freq = 1,
-		.sample_freq = 1000,
+		.sample_freq = 100,
 		.type = PERF_TYPE_SOFTWARE,
 		.config = PERF_COUNT_SW_CPU_CLOCK,
 	};
@@ -235,7 +235,7 @@ static void test_send_signal_nmi(bool signal_thread, bool remote)
 {
 	struct perf_event_attr attr = {
 		.freq = 1,
-		.sample_freq = 1000,
+		.sample_freq = 100,
 		.type = PERF_TYPE_HARDWARE,
 		.config = PERF_COUNT_HW_CPU_CYCLES,
 	};

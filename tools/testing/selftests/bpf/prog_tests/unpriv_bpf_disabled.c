@@ -283,7 +283,7 @@ void test_unpriv_bpf_disabled(void)
 	attr.type = PERF_TYPE_SOFTWARE;
 	attr.config = PERF_COUNT_SW_CPU_CLOCK;
 	attr.freq = 1;
-	attr.sample_freq = 1000;
+	attr.sample_freq = 100;
 	perf_fd = syscall(__NR_perf_event_open, &attr, -1, 0, -1, PERF_FLAG_FD_CLOEXEC);
 	if (!ASSERT_GE(perf_fd, 0, "perf_fd"))
 		goto cleanup;
