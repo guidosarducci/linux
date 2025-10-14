@@ -248,6 +248,8 @@ __weak int perf_subprog_regs(
 	void *ctx __arg_ctx
 #elif defined(bpf_target_loongarch) || defined(bpf_target_arm64) || defined(bpf_target_powerpc)
 	struct user_pt_regs *ctx __arg_ctx
+#elif defined(bpf_target_arm)
+	bpf_user_pt_regs_t *ctx __arg_ctx
 #else
 	struct pt_regs *ctx __arg_ctx
 #endif
