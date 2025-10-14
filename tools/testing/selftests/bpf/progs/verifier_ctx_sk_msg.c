@@ -144,7 +144,7 @@ __naked void past_end_of_sk_msg(void)
 	r2 = *(u32*)(r1 + %[__imm_0]);			\
 	exit;						\
 "	:
-	: __imm_const(__imm_0, offsetof(struct sk_msg_md, size) + 4)
+	: __imm_const(__imm_0, offsetof(struct sk_msg_md, sk) + 8)
 	: __clobber_all);
 }
 
