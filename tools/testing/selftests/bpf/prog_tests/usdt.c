@@ -163,9 +163,9 @@ static void subtest_basic_usdt(bool optimized)
 	ASSERT_EQ(bss->usdt3_args[0], 1, "usdt3_arg1");
 	ASSERT_EQ(bss->usdt3_args[1], 42, "usdt3_arg2");
 	ASSERT_EQ(bss->usdt3_args[2], (uintptr_t)&bla, "usdt3_arg3");
-	ASSERT_EQ(bss->usdt3_arg_sizes[0], 4, "usdt3_arg1_size");
-	ASSERT_EQ(bss->usdt3_arg_sizes[1], 8, "usdt3_arg2_size");
-	ASSERT_EQ(bss->usdt3_arg_sizes[2], 8, "usdt3_arg3_size");
+	ASSERT_EQ(bss->usdt3_arg_sizes[0], sizeof(int), "usdt3_arg1_size");
+	ASSERT_EQ(bss->usdt3_arg_sizes[1], sizeof(long), "usdt3_arg2_size");
+	ASSERT_EQ(bss->usdt3_arg_sizes[2], sizeof(uintptr_t), "usdt3_arg3_size");
 
 	/* auto-attached usdt12 gets default zero cookie value */
 	ASSERT_EQ(bss->usdt12_cookie, 0, "usdt12_cookie");
@@ -184,7 +184,20 @@ static void subtest_basic_usdt(bool optimized)
 	ASSERT_EQ(bss->usdt12_args[10], nums[idx], "usdt12_arg11");
 	ASSERT_EQ(bss->usdt12_args[11], t1.y, "usdt12_arg12");
 
-	int usdt12_expected_arg_sizes[12] = { 4, 4, 8, 8, 4, 8, 8, 8, 4, 2, 2, 1 };
+	int usdt12_expected_arg_sizes[12] = {
+		sizeof(int),
+		sizeof(int),
+		sizeof(long),
+		sizeof(long),
+		sizeof(unsigned),
+		sizeof(long),
+		sizeof(__u64),
+		sizeof(uintptr_t),
+		sizeof(int),
+		sizeof(short),
+		sizeof(short),
+		sizeof(signed char)
+	};
 
 	for (i = 0; i < 12; i++)
 		ASSERT_EQ(bss->usdt12_arg_sizes[i], usdt12_expected_arg_sizes[i], "usdt12_arg_size");
