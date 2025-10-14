@@ -58,7 +58,7 @@ struct {
 	__uint(value_size, sizeof(__u32));
 } prog_array SEC(".maps");
 
-SEC("fentry/" SYS_NANOSLEEP)
+SEC("kprobe/" SYS_NANOSLEEP)
 int sys_nanosleep_enter(void *ctx)
 {
 	int cur_pid;
