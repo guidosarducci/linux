@@ -38,10 +38,21 @@ int kprobe_typedef_ctx(void *ctx)
  *   - struct bpf_user_pt_regs_t *ctx (backwards compatible struct hack);
  *   - void *ctx __arg_ctx (arg:ctx tag)
  *
+ *
+ * arm defines:
+ *
+ * typedef struct pt_regs___bpf bpf_user_pt_regs_t;
+ * struct pt_regs___bpf {
+ *         unsigned int uregs[18];
+ * };
+ *
+ * Meaning 32-bit arm supports usage of PTR_TO_CTX args as above.
+ *
+ *
  * Other architectures also allow using underlying struct types (e.g.,
  * `struct pt_regs *ctx` for x86-64)
  */
-#ifndef bpf_target_s390
+#if !defined(bpf_target_s390) && !defined(bpf_target_arm)
 
 #define pt_regs_struct_t typeof(*(__PT_REGS_CAST((struct pt_regs *)NULL)))
 
