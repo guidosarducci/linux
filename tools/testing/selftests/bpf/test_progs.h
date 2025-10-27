@@ -253,7 +253,7 @@ void hexdump(const char *prefix, const void *buf, size_t len);
 	bool ___ok = ___act == ___exp;					\
 	CHECK(!___ok, (name),						\
 	      "unexpected %s: actual %lld != expected %lld\n",		\
-	      (name), (long long)(___act), (long long)(___exp));	\
+	      (name), (long long)(long)(___act), (long long)(long)(___exp));   \
 	___ok;								\
 })
 
@@ -264,7 +264,7 @@ void hexdump(const char *prefix, const void *buf, size_t len);
 	bool ___ok = ___act != ___exp;					\
 	CHECK(!___ok, (name),						\
 	      "unexpected %s: actual %lld == expected %lld\n",		\
-	      (name), (long long)(___act), (long long)(___exp));	\
+	      (name), (long long)(long)(___act), (long long)(long)(___exp));   \
 	___ok;								\
 })
 
