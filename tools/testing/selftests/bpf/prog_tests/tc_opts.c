@@ -2533,8 +2533,8 @@ static void test_tc_opts_query_target(int target)
 
 	ASSERT_EQ(optq.count, 4, "count");
 	ASSERT_EQ(optq.revision, 5, "revision");
-	ASSERT_EQ(optq.prog_ids, NULL, "prog_ids");
-	ASSERT_EQ(optq.link_ids, NULL, "link_ids");
+	ASSERT_NULL(optq.prog_ids, "prog_ids");
+	ASSERT_NULL(optq.link_ids, "link_ids");
 
 	memset(prog_ids, 0, sizeof(prog_ids));
 	optq.prog_ids = prog_ids;
@@ -2550,7 +2550,7 @@ static void test_tc_opts_query_target(int target)
 	ASSERT_EQ(optq.prog_ids[2], id3, "prog_ids[2]");
 	ASSERT_EQ(optq.prog_ids[3], id4, "prog_ids[3]");
 	ASSERT_EQ(optq.prog_ids[4], 0, "prog_ids[4]");
-	ASSERT_EQ(optq.link_ids, NULL, "link_ids");
+	ASSERT_NULL(optq.link_ids, "link_ids");
 
 	/* Test 2: Double query via bpf_attr & bpf(2) directly */
 	memset(&attr, 0, attr_size);

@@ -113,7 +113,7 @@ static void test_prog_attach_detach(int atype)
 	ASSERT_EQ(optq.prog_ids[2], id1, "prog_ids[2]");
 	ASSERT_EQ(optq.prog_ids[3], id4, "prog_ids[3]");
 	ASSERT_EQ(optq.prog_ids[4], 0, "prog_ids[4]");
-	ASSERT_EQ(optq.link_ids, NULL, "link_ids");
+	ASSERT_NULL(optq.link_ids, "link_ids");
 
 cleanup4:
 	optd.expected_revision = 5;
@@ -245,7 +245,7 @@ static void test_link_attach_detach(int atype)
 	ASSERT_EQ(optq.prog_ids[2], id1, "prog_ids[2]");
 	ASSERT_EQ(optq.prog_ids[3], id4, "prog_ids[3]");
 	ASSERT_EQ(optq.prog_ids[4], 0, "prog_ids[4]");
-	ASSERT_EQ(optq.link_ids, NULL, "link_ids");
+	ASSERT_NULL(optq.link_ids, "link_ids");
 
 cleanup4:
 	bpf_link__destroy(link4);

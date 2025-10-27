@@ -108,7 +108,7 @@ static void test_concurrent_update(void)
 
 	nr = 4;
 	tids = calloc(nr, sizeof(*tids));
-	if (!ASSERT_NEQ(tids, NULL, "no mem"))
+	if (!ASSERT_NOT_NULL(tids, "no mem"))
 		goto out;
 
 	for (i = 0; i < nr; i++) {
@@ -127,7 +127,7 @@ static void test_concurrent_update(void)
 		void *thread_err = NULL;
 
 		pthread_join(tids[i], &thread_err);
-		ASSERT_EQ(thread_err, NULL, "update error");
+		ASSERT_NULL(thread_err, "update error");
 	}
 
 out:

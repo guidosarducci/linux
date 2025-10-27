@@ -185,7 +185,7 @@ reap:
 		snprintf(desc, sizeof(desc), "thread %u", i + 1);
 		err = pthread_join(tids[i], &ret);
 		ASSERT_OK(err, desc);
-		ASSERT_EQ(ret, NULL, desc);
+		ASSERT_NULL(ret, desc);
 	}
 destroy:
 	fd_htab_lookup__destroy(skel);

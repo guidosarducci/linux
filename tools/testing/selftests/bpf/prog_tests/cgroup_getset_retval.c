@@ -483,7 +483,7 @@ static void test_exposed_hooks(int cgroup_fd, int sock_fd)
 			continue;
 
 		prog = bpf_object__find_program_by_name(skel->obj, exposed_hooks[i].name);
-		if (!ASSERT_NEQ(prog, NULL, "bpf_object__find_program_by_name"))
+		if (!ASSERT_NOT_NULL(prog, "bpf_object__find_program_by_name"))
 			goto close_skel;
 
 		err = bpf_program__set_autoload(prog, true);

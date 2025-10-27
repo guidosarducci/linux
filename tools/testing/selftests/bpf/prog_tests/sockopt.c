@@ -1002,7 +1002,7 @@ static int uring_sockopt(int op, int fd, int level, int optname,
 		return err;
 
 	sqe = io_uring_get_sqe(&ring);
-	if (!ASSERT_NEQ(sqe, NULL, "Get an SQE")) {
+	if (!ASSERT_NOT_NULL(sqe, "Get an SQE")) {
 		err = -1;
 		goto fail;
 	}

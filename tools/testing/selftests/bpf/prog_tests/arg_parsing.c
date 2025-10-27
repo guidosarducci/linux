@@ -126,7 +126,7 @@ static void test_parse_test_list_file(void)
 		return;
 
 	fp = fdopen(fd, "w");
-	if (!ASSERT_NEQ(fp, NULL, "fdopen tmp")) {
+	if (!ASSERT_NOT_NULL(fp, "fdopen tmp")) {
 		close(fd);
 		goto out_remove;
 	}

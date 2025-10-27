@@ -637,7 +637,7 @@ static void test_user_ringbuf_blocking_reserve(void)
 
 	/* We correctly time out after 1 second, without a sample. */
 	token = user_ring_buffer__reserve_blocking(ringbuf, sizeof(*token), 1000);
-	if (!ASSERT_EQ(token, NULL, "pre_kick_timeout_token"))
+	if (!ASSERT_NULL(token, "pre_kick_timeout_token"))
 		goto cleanup;
 
 	err = spawn_kick_thread_for_poll();

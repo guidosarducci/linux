@@ -147,7 +147,7 @@ void test_btf_field_iter(void)
 			str_idx++;
 		}
 		/* ensure no more strings are expected */
-		ASSERT_EQ(fields[id].strs[str_idx], NULL, "field_str_cnt");
+		ASSERT_NULL(fields[id].strs[str_idx], "field_str_cnt");
 
 		while ((next_id = btf_field_iter_next(&it_ids))) {
 			if (!ASSERT_EQ(*next_id, fields[id].ids[id_idx], "field_id_match"))

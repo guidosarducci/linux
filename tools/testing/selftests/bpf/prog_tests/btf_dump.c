@@ -823,8 +823,8 @@ static void test_btf_dump_struct_data(struct btf *btf, struct btf_dump *d,
 		ASSERT_EQ(ret, type_sz,
 			  "unexpected return value dumping fs_context");
 
-		ASSERT_NEQ(strstr(str, "FS_CONTEXT_FOR_MOUNT"), NULL,
-				  "bitfield value not present");
+		ASSERT_NOT_NULL(strstr(str, "FS_CONTEXT_FOR_MOUNT"),
+				"bitfield value not present");
 	}
 
 	/* struct with nested anon union */

@@ -114,7 +114,7 @@ void run_assign_reuse(int family, int sotype, const char *ip, __u16 port)
 	fd_map = bpf_map__fd(skel->maps.sk_map);
 
 	fd_sv = start_reuseport_server(family, sotype, ip, port, 100, 1);
-	if (!ASSERT_NEQ(fd_sv, NULL, "start_reuseport_server"))
+	if (!ASSERT_NOT_NULL(fd_sv, "start_reuseport_server"))
 		goto cleanup;
 
 	ret = attach_reuseport(*fd_sv, fd_drop);

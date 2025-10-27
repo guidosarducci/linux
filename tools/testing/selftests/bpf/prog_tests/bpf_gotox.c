@@ -246,7 +246,7 @@ void test_bpf_gotox(void)
 	int ret;
 
 	skel = bpf_gotox__open();
-	if (!ASSERT_NEQ(skel, NULL, "bpf_gotox__open"))
+	if (!ASSERT_NOT_NULL(skel, "bpf_gotox__open"))
 		return;
 
 	ret = bpf_gotox__load(skel);

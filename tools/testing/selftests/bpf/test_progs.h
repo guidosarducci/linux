@@ -385,6 +385,14 @@ void hexdump(const char *prefix, const void *buf, size_t len);
 	___ok;								\
 })
 
+#define ASSERT_NOT_NULL(ptr, name) ({					\
+	static int duration = 0;					\
+	const void *___res = (ptr);					\
+	bool ___ok = ___res;						\
+	CHECK(!___ok, (name), "unexpected pointer: %p\n", ___res);	\
+	___ok;								\
+})
+
 #define ASSERT_OK_PTR(ptr, name) ({					\
 	static int duration = 0;					\
 	const void *___res = (ptr);					\

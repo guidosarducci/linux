@@ -46,7 +46,7 @@ static int initialize_file_contents(void)
 		return 1;
 
 	addr = get_executable_base_addr();
-	if (!ASSERT_NEQ(addr, NULL, "get executable address"))
+	if (!ASSERT_NOT_NULL(addr, "get executable address"))
 		return 1;
 
 	/* page-align base file address */

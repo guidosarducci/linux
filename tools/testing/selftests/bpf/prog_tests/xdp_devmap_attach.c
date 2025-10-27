@@ -102,8 +102,8 @@ static void test_neg_xdp_devmap_helpers(void)
 	struct test_xdp_devmap_helpers *skel;
 
 	skel = test_xdp_devmap_helpers__open_and_load();
-	if (!ASSERT_EQ(skel, NULL,
-		    "Load of XDP program accessing egress ifindex without attach type")) {
+	if (!ASSERT_NULL(skel,
+			 "Load of XDP program accessing egress ifindex without attach type")) {
 		test_xdp_devmap_helpers__destroy(skel);
 	}
 }

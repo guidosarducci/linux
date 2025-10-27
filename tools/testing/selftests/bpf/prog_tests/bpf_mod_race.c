@@ -151,7 +151,7 @@ static void test_bpf_mod_race_config(const struct test_config *config)
 	 */
 	skel_fail = config->bpf_open_and_load();
 	ret = errno;
-	if (!ASSERT_EQ(skel_fail, NULL, config->str_open)) {
+	if (!ASSERT_NULL(skel_fail, config->str_open)) {
 		/* Close uffd to unblock load_mod_thrd */
 		close(uffd);
 		uffd = -1;

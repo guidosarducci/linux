@@ -76,7 +76,7 @@ void serial_test_trampoline_count(void)
 	/* with E2BIG error */
 	if (!ASSERT_EQ(libbpf_get_error(link), -E2BIG, "E2BIG"))
 		goto cleanup;
-	if (!ASSERT_EQ(link, NULL, "ptr_is_null"))
+	if (!ASSERT_NULL(link, "ptr_is_null"))
 		goto cleanup;
 
 	/* and finally execute the probe */
