@@ -14,23 +14,23 @@ struct {
 
 int pid;
 
-const volatile unsigned long LEN1;
-const volatile unsigned long LEN2;
-const volatile unsigned long LEN3;
-const volatile unsigned long LEN4;
-const volatile unsigned long LEN5;
+const volatile __u64 LEN1;
+const volatile __u64 LEN2;
+const volatile __u64 LEN3;
+const volatile __u64 LEN4;
+const volatile __u64 LEN5;
 
-long reserve1_fail = 0;
-long reserve2_fail = 0;
-long reserve3_fail = 0;
-long reserve4_fail = 0;
-long reserve5_fail = 0;
+int reserve1_fail = 0;
+int reserve2_fail = 0;
+int reserve3_fail = 0;
+int reserve4_fail = 0;
+int reserve5_fail = 0;
 
-unsigned long avail_data = 0;
-unsigned long ring_size = 0;
-unsigned long cons_pos = 0;
-unsigned long prod_pos = 0;
-unsigned long over_pos = 0;
+__u64 avail_data = 0;
+__u64 ring_size = 0;
+__u64 cons_pos = 0;
+__u64 prod_pos = 0;
+__u64 over_pos = 0;
 
 SEC("fentry/" SYS_PREFIX "sys_getpgid")
 int test_overwrite_ringbuf(void *ctx)
