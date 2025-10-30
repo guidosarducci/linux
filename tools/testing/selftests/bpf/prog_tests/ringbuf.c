@@ -17,7 +17,7 @@
 #include "test_ringbuf_n.lskel.h"
 #include "test_ringbuf_map_key.lskel.h"
 #include "test_ringbuf_write.lskel.h"
-#include "test_ringbuf_overwrite.lskel.h"
+#include "test_ringbuf_overwrite.skel.h"
 
 #define EDONE 7777
 
@@ -502,11 +502,11 @@ static void ringbuf_overwrite_mode_subtest(void)
 {
 	unsigned long size, len1, len2, len3, len4, len5;
 	unsigned long expect_avail_data, expect_prod_pos, expect_over_pos;
-	struct test_ringbuf_overwrite_lskel *skel;
+	struct test_ringbuf_overwrite *skel;
 	int page_size = getpagesize();
 	int err;
 
-	skel = test_ringbuf_overwrite_lskel__open();
+	skel = test_ringbuf_overwrite__open();
 	if (!ASSERT_OK_PTR(skel, "skel_open"))
 		return;
 
@@ -517,7 +517,7 @@ static void ringbuf_overwrite_mode_subtest(void)
 	len4 = len3 - 8;
 	len5 = len3; /* retry with len3 */
 
-	skel->maps.ringbuf.max_entries = size;
+	bpf_map__set_max_entries(skel->maps.ringbuf, size);
 	skel->rodata->LEN1 = len1;
 	skel->rodata->LEN2 = len2;
 	skel->rodata->LEN3 = len3;
@@ -526,11 +526,11 @@ static void ringbuf_overwrite_mode_subtest(void)
 
 	skel->bss->pid = getpid();
 
-	err = test_ringbuf_overwrite_lskel__load(skel);
+	err = test_ringbuf_overwrite__load(skel);
 	if (!ASSERT_OK(err, "skel_load"))
 		goto cleanup;
 
-	err = test_ringbuf_overwrite_lskel__attach(skel);
+	err = test_ringbuf_overwrite__attach(skel);
 	if (!ASSERT_OK(err, "skel_attach"))
 		goto cleanup;
 
@@ -555,9 +555,9 @@ static void ringbuf_overwrite_mode_subtest(void)
 	expect_over_pos = len1 + BPF_RINGBUF_HDR_SZ;
 	ASSERT_EQ(skel->bss->over_pos, expect_over_pos, "check_over_pos");
 
-	test_ringbuf_overwrite_lskel__detach(skel);
+	test_ringbuf_overwrite__detach(skel);
 cleanup:
-	test_ringbuf_overwrite_lskel__destroy(skel);
+	test_ringbuf_overwrite__destroy(skel);
 }
 
 void test_ringbuf(void)
