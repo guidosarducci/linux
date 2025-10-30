@@ -32,7 +32,7 @@ __u64 cons_pos = 0;
 __u64 prod_pos = 0;
 __u64 over_pos = 0;
 
-SEC("fentry/" SYS_PREFIX "sys_getpgid")
+SEC("kprobe/" SYS_PREFIX "sys_getpgid")
 int test_overwrite_ringbuf(void *ctx)
 {
 	char *rec1, *rec2, *rec3, *rec4, *rec5;
