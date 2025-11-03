@@ -92,8 +92,7 @@ SEC("syscall")
 __success __retval(0)
 int stream_syscall(void *ctx)
 {
-	bpf_stream_printk(BPF_STDOUT, "foo");
-	return 0;
+	return bpf_stream_printk(BPF_STDOUT, "foo");
 }
 
 char _license[] SEC("license") = "GPL";

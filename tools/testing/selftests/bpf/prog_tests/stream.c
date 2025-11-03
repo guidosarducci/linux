@@ -32,6 +32,8 @@ void test_stream_syscall(void)
 	prog_fd = bpf_program__fd(skel->progs.stream_syscall);
 	ret = bpf_prog_test_run_opts(prog_fd, &opts);
 	ASSERT_OK(ret, "ret");
+
+	errno = (int)opts.retval;
 	ASSERT_OK(opts.retval, "retval");
 
 	ASSERT_LT(bpf_prog_stream_read(0, BPF_STREAM_STDOUT, buf, sizeof(buf), &ropts), 0, "error");
