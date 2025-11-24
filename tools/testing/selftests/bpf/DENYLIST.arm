@@ -1,0 +1,67 @@
+# arm32 deny list for BPF CI and local vmtest
+livepatch_trampoline				# arch missing HAVE_LIVEPATCH
+
+bloom_filter_map				# BPF callbacks broken, panic
+bpf_loop/check_non_constant_callback		# BPF callbacks broken, panic
+find_vma					# BPF callbacks broken, panic
+for_each					# BPF callbacks broken, panic
+free_timer					# BPF callbacks broken, panic
+map_ops/for_each				# BPF callbacks broken, panic
+rbtree_success					# BPF callbacks broken, panic
+rbtree_search					# BPF callbacks broken, panic
+task_work					# BPF callbacks broken, panic
+task_work_stress				# BPF callbacks broken, panic
+timer_lockup					# BPF callbacks broken, panic
+user_ringbuf					# BPF callbacks broken, panic
+wq						# BPF callbacks broken, panic
+
+task_local_storage/uptr_basic			# BPF TLS broken 32-bit, panic
+
+reg_bounds_rand*				# very slow, skip
+
+exceptions					# BPF exceptions missing
+res_spin_lock_failure/res_spin_lock_var_off	# BPF exceptions missing
+
+*fentry*					# BPF trampoline missing
+*fmod*						# BPF trampoline missing
+*fexit*						# BPF trampoline missing
+
+bpf_cookie					# BPF trampoline missing
+bpf_mod_race					# BPF trampoline missing
+dynptr/test_copy_from_user_*			# BPF trampoline missing
+get_func_*_test					# BPF trampoline missing
+iters/*task					# BPF trampoline missing
+modify_return					# BPF trampoline missing
+module_attach					# BPF trampoline missing
+mptcp						# BPF trampoline missing
+tailcalls/*fentry*				# BPF trampoline missing
+tailcalls/*fexit*				# BPF trampoline missing
+tailcalls/*freplace*				# BPF trampoline missing
+tracing_struct					# BPF trampoline missing
+trampoline_count				# BPF trampoline missing
+xdp_bpf2bpf					# BPF trampoline missing
+xdp_metadata					# BPF trampoline missing
+
+*kprobe_multi*					# multi-probes uses trampoline
+*uprobe_multi*					# multi-probes uses trampoline
+build_id					# multi-probes uses trampoline
+fill_link_info/kprobe_multi*			# multi-probes uses trampoline
+fill_link_info/kretprobe_multi*			# multi-probes uses trampoline
+fill_link_info/uprobe_multi*			# multi-probes uses trampoline
+fill_link_info/uretprobe_multi*			# multi-probes uses trampoline
+
+cgroup1_hierarchy				# lsm attach uses trampoline
+file_reader/on_open_*				# lsm attach uses trampoline
+fs_kfuncs					# lsm attach uses trampoline
+iters/css					# lsm attach uses trampoline
+ptr_untrusted					# lsm attach uses trampoline
+task_under_cgroup				# lsm attach uses trampoline
+
+bpf_iter_setsockopt				# struct_ops uses trampoline
+bpf_qdisc_default				# struct_ops uses trampoline
+bpf_tcp_ca					# struct_ops uses trampoline
+dummy_st_ops					# struct_ops uses trampoline
+ns_bpf_qdisc					# struct_ops uses trampoline
+struct_ops_module				# struct_ops uses trampoline
+struct_ops_multi_pages				# struct_ops uses trampoline
+struct_ops_id_ops_mapping			# struct_ops uses trampoline
