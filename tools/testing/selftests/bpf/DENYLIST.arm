@@ -37,6 +37,9 @@ mptcp						# BPF trampoline missing
 tailcalls/*fentry*				# BPF trampoline missing
 tailcalls/*fexit*				# BPF trampoline missing
 tailcalls/*freplace*				# BPF trampoline missing
+test_overhead					# BPF trampoline missing
+timer*						# BPF trampoline missing
+token						# BPF trampoline missing
 tracing_struct					# BPF trampoline missing
 trampoline_count				# BPF trampoline missing
 xdp_bpf2bpf					# BPF trampoline missing
@@ -56,12 +59,15 @@ fs_kfuncs					# lsm attach uses trampoline
 iters/css					# lsm attach uses trampoline
 ptr_untrusted					# lsm attach uses trampoline
 task_under_cgroup				# lsm attach uses trampoline
+test_bprm_opts					# lsm attach uses trampoline
+test_ima					# lsm attach uses trampoline
 
 bpf_iter_setsockopt				# struct_ops uses trampoline
 bpf_qdisc_default				# struct_ops uses trampoline
 bpf_tcp_ca					# struct_ops uses trampoline
 dummy_st_ops					# struct_ops uses trampoline
 ns_bpf_qdisc					# struct_ops uses trampoline
+pro_epilogue					# struct_ops uses trampoline
 struct_ops_module				# struct_ops uses trampoline
 struct_ops_multi_pages				# struct_ops uses trampoline
 struct_ops_id_ops_mapping			# struct_ops uses trampoline
